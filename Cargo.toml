@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 description = "A fast, keyboard-driven native console for Cloudflare D1, KV, R2 and Worker logs."
+license = "MIT"
+repository = "https://github.com/rcnsh/cloudflare-gui"
+readme = "README.md"
 
 [[bin]]
 name = "cloudflare-gui"
@@ -35,10 +38,11 @@ keyring-core = "1"
 apple-native-keyring-store = { version = "1", features = ["keychain"] }
 
 image = { version = "0.25", default-features = false, features = ["png"], optional = true }
+rusqlite = { version = "0.40", features = ["bundled"], optional = true }
 
 [features]
-# Scripted UI driving and frame capture for development (see src/devtools.rs).
-devtools = ["gpui/test-support", "gpui_platform/test-support", "dep:image"]
+# Scripted UI driving, frame capture and the offline demo (see src/devtools/).
+devtools = ["gpui/test-support", "gpui_platform/test-support", "dep:image", "dep:rusqlite"]
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "net", "io-util"] }
@@ -53,3 +57,8 @@ rustybuzz = { opt-level = 3 }
 ttf-parser = { opt-level = 3 }
 tree-sitter = { opt-level = 3 }
 gpui-pre-sum-tree = { opt-level = 3 }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

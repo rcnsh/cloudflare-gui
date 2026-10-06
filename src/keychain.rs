@@ -11,6 +11,14 @@ use crate::cloudflare::Token;
 const SERVICE: &str = "dev.cloudflare-gui.api-token";
 const USER: &str = "default";
 
+/// The demo account must never read, replace or delete a real token.
+fn demo() -> bool {
+    #[cfg(feature = "devtools")]
+    return crate::devtools::demo::active();
+    #[cfg(not(feature = "devtools"))]
+    false
+}
+
 fn entry() -> Result<Entry> {
     static INIT: Once = Once::new();
     INIT.call_once(
@@ -23,6 +31,9 @@ fn entry() -> Result<Entry> {
 }
 
 pub fn load_token() -> Result<Option<Token>> {
+    if demo() {
+        return Ok(None);
+    }
     match entry()?.get_password() {
         Ok(secret) if !secret.trim().is_empty() => Ok(Some(Token::new(secret))),
         Ok(_) | Err(Error::NoEntry) => Ok(None),
@@ -31,12 +42,18 @@ pub fn load_token() -> Result<Option<Token>> {
 }
 
 pub fn save_token(token: &Token) -> Result<()> {
+    if demo() {
+        return Ok(());
+    }
     entry()?
         .set_password(token.expose())
         .context("couldn't save the API token to the keychain")
 }
 
 pub fn delete_token() -> Result<()> {
+    if demo() {
+        return Ok(());
+    }
     match entry()?.delete_credential() {
         Ok(()) | Err(Error::NoEntry) => Ok(()),
         Err(e) => Err(e).context("couldn't remove the API token from the keychain"),

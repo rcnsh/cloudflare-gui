@@ -38,6 +38,11 @@ impl<T> Loadable<T> {
 
 /// Where the app keeps non-secret files (settings, query history).
 pub fn data_dir() -> std::path::PathBuf {
+    // The demo keeps its history and settings away from the real ones.
+    #[cfg(feature = "devtools")]
+    if crate::devtools::demo::active() {
+        return std::env::temp_dir().join("cloudflare-gui-demo");
+    }
     dirs::data_dir()
         .unwrap_or_else(std::env::temp_dir)
         .join("cloudflare-gui")

@@ -35,6 +35,18 @@ impl AppView {
         let appearance = cx.observe_window_appearance(window, |_, window, cx| {
             Theme::sync_system_appearance(Some(window), cx);
         });
+        #[cfg(feature = "devtools")]
+        if let Some((base, account)) = crate::devtools::demo::start() {
+            let mut this = Self {
+                screen: Screen::Loading,
+                focus_handle: cx.focus_handle(),
+                _screen_subscription: None,
+                _appearance: appearance,
+            };
+            let client = Client::with_base(Token::new("demo"), base);
+            this.show_workspace(client, account, window, cx);
+            return this;
+        }
         // The Keychain can block for as long as its access prompt is open, so
         // read it off the main thread and keep the window responsive.
         let load = cx

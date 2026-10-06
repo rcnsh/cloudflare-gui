@@ -83,7 +83,9 @@ src/
     history.rs       per-database query history
     settings.rs      non-secret preferences
     tails.rs         tail sessions that are open, so quitting can delete them
-  devtools.rs        scripted UI driving and screenshots (feature `devtools` only)
+  devtools/          feature `devtools` only
+    mod.rs           scripted UI driving, screenshots, fake tail server
+    demo.rs          offline demo account: fake REST API, D1 backed by in-memory SQLite
   views/             one file per view
     app.rs           setup flow or workspace, title bar
     setup.rs         token entry, verification, account picker
@@ -100,12 +102,25 @@ tests/fixtures/      recorded API responses (sanitized)
 
 `cargo build --features devtools` adds a script runner. `CFGUI_SCRIPT` is a `;`-separated list
 of `wait <secs>`, `key <keystroke>`, `type <text>`, `click <x> <y>` (logical pixels),
-`shot <file.png>` and `quit`. Screenshots are rendered by the app itself, so they don't need
+`paste <text>` (`\n` for newlines; puts the previous clipboard back), `shot <file.png>` and
+`quit`. Steps are split on `;`, so pasted SQL can't contain one. Screenshots are rendered by the app itself, so they don't need
 screen-recording permission. Keep them in `screenshots/`, which is gitignored because the
 account name contains an email address.
 
 `CFGUI_FAKE_TAIL=1` points Worker tail tabs at a local WebSocket that sends synthetic events,
 so the tail view can be exercised without creating a tail session on the account.
+
+`CFGUI_DEMO=1` signs in to an invented "Acme Inc" account served from localhost, with D1 backed
+by in-memory SQLite. Demo mode never touches the Keychain, and it keeps settings and history in a
+temp directory. **Use it for every screenshot that leaves this machine**, including
+`docs/screenshots/` in the README. Real-account screenshots stay in the gitignored `screenshots/`.
+The README shots come from scripts like this (window coordinates are half the PNG's pixels):
+
+```sh
+CFGUI_DEMO=1 CFGUI_SCRIPT="wait 3; click 74 268; key enter; wait 2; key down; wait 2; shot docs/screenshots/kv.png; quit" \
+  script/run target/debug/cloudflare-gui
+sips -Z 1600 docs/screenshots/kv.png
+```
 
 ### Keychain prompts
 
@@ -120,3 +135,11 @@ rebuilds. Launch with `cargo run` or `script/run target/debug/cloudflare-gui`. R
 `target/debug/cloudflare-gui` directly skips the signing and brings the prompt back. Without the
 identity (CI, a fresh machine) the runner just runs the binary. While a prompt is open, the window
 shows "Reading the API token from the Keychain…".
+
+## Releases
+
+`.github/workflows/release.yml` runs on a `v*` tag. It checks the tag matches the `version` in
+`Cargo.toml`, runs the tests, builds `aarch64` and `x86_64`, joins them with `lipo`, and wraps
+the result with `script/bundle`, which makes the ad-hoc-signed `Cloudflare GUI.app` and the zip.
+It then publishes a GitHub release with generated notes. To rebuild an existing tag, run the
+workflow manually with that tag.

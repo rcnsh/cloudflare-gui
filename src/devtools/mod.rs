@@ -7,11 +7,15 @@
 //!   `key cmd-k`  press a keystroke
 //!   `type users` type text into whatever has focus
 //!   `click 640 300` left-click at window coordinates (logical pixels)
+//!   `paste a\nb`  paste text (`\n` for newlines) through the clipboard,
+//!                then put the previous clipboard back
 //!   `shot a.png` save the current frame as PNG
 //!   `quit`
 //!
 //! With `CFGUI_FAKE_TAIL=1`, Worker tail tabs connect to a local WebSocket
 //! that emits synthetic events instead of creating a tail on the account.
+
+pub mod demo;
 
 use std::time::Duration;
 
@@ -39,6 +43,21 @@ pub fn run_script(window: AnyWindowHandle, cx: &mut App) {
                 }
                 "key" => press(window, cx, &arg),
                 "click" => click(window, cx, &arg),
+                "paste" => {
+                    let text = arg.replace("\\n", "\n");
+                    let previous = cx.update(|cx| {
+                        let previous = cx.read_from_clipboard();
+                        cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
+                        previous
+                    });
+                    press(window, cx, "cmd-v");
+                    cx.background_executor()
+                        .timer(Duration::from_millis(100))
+                        .await;
+                    if let Some(previous) = previous {
+                        cx.update(|cx| cx.write_to_clipboard(previous));
+                    }
+                }
                 "type" => {
                     for ch in arg.chars() {
                         let key = if ch == ' ' {
@@ -129,17 +148,30 @@ fn press(window: AnyWindowHandle, cx: &mut AsyncApp, keys: &str) {
     }
 }
 
-/// The URL of a local fake tail server, started on first use, when
-/// `CFGUI_FAKE_TAIL` is set.
+/// With `CFGUI_FAKE_TAIL` set, tail tabs skip the API and connect straight to
+/// the fake tail server.
 pub fn fake_tail_url() -> Option<String> {
+    std::env::var_os("CFGUI_FAKE_TAIL")?;
+    fake_tail_server()
+}
+
+/// The URL of a local fake tail server, started on first use.
+pub fn fake_tail_server() -> Option<String> {
     static URL: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
     URL.get_or_init(|| {
-        std::env::var_os("CFGUI_FAKE_TAIL")?;
-        let listener = crate::runtime::block_on(tokio::net::TcpListener::bind("127.0.0.1:0"))
+        // Bound with std so this works from any thread, including the demo
+        // API's, where blocking on the runtime would panic.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")
+            .and_then(|l| l.set_nonblocking(true).map(|()| l))
             .map_err(|e| log::error!("fake tail server: {e}"))
             .ok()?;
         let url = format!("ws://{}", listener.local_addr().ok()?);
-        drop(crate::runtime::spawn(serve_fake_tail(listener)));
+        drop(crate::runtime::spawn(async move {
+            match tokio::net::TcpListener::from_std(listener) {
+                Ok(listener) => serve_fake_tail(listener).await,
+                Err(e) => log::error!("fake tail server: {e}"),
+            }
+        }));
         log::info!("fake tail server at {url}");
         Some(url)
     })
@@ -203,7 +235,7 @@ fn fake_event(n: u64) -> serde_json::Value {
     let failed = n % 9 == 7;
     serde_json::json!({
         "outcome": if failed { "exception" } else { "ok" },
-        "scriptName": "example-worker",
+        "scriptName": "storefront",
         "exceptions": if failed {
             serde_json::json!([{ "name": "TypeError", "message": "Cannot read properties of undefined (reading 'id')", "timestamp": now }])
         } else {
@@ -212,7 +244,7 @@ fn fake_event(n: u64) -> serde_json::Value {
         "logs": logs,
         "eventTimestamp": now,
         "event": {
-            "request": { "url": format!("https://example.com{path}"), "method": if n % 7 == 2 { "POST" } else { "GET" }, "headers": {} },
+            "request": { "url": format!("https://shop.example.com{path}"), "method": if n % 7 == 2 { "POST" } else { "GET" }, "headers": {} },
             "response": { "status": if failed { 500 } else { 200 } }
         }
     })
