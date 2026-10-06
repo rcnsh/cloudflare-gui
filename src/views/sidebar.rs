@@ -58,7 +58,17 @@ pub struct Sidebar {
 impl Sidebar {
     pub fn new(session: Entity<Session>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let tree = cx.new(|cx| TreeState::new(cx));
+        let focus_handle = cx.focus_handle();
         let subscriptions = vec![
+            // The tree owns the keyboard handling, so whenever the panel itself
+            // is focused (startup, clicking the dock) hand focus to the tree.
+            cx.on_focus(&focus_handle, window, |this, window, cx| {
+                this.focus_tree(window, cx);
+                if this.tree.read(cx).selected_index().is_none() {
+                    this.tree
+                        .update(cx, |t, cx| t.set_selected_index(Some(0), cx));
+                }
+            }),
             cx.subscribe(&session, |this, _, _: &SessionEvent, cx| this.rebuild(cx)),
             cx.subscribe_in(
                 &tree,
@@ -87,7 +97,7 @@ impl Sidebar {
                 .into_iter()
                 .map(SharedString::from)
                 .collect(),
-            focus_handle: cx.focus_handle(),
+            focus_handle,
             _subscriptions: subscriptions,
         };
         this.rebuild(cx);
