@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 use serde::Deserialize;
 
-use super::{Client, Page, Request, Result};
+use super::{ApiError, Client, Page, Request, Result};
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 pub struct Bucket {
@@ -119,14 +119,16 @@ impl Client {
         })
     }
 
-    /// Downloads an object body. Callers should check the size from the
-    /// listing first; previews cap what they fetch.
+    /// Downloads at most `limit` bytes of an object. The REST endpoint has no
+    /// range support, so the body is read in chunks and the connection dropped
+    /// once the limit is reached; a huge object never downloads in full.
     pub async fn get_r2_object(
         &self,
         account_id: &str,
         bucket: &Bucket,
         key: &str,
-    ) -> Result<Vec<u8>> {
+        limit: usize,
+    ) -> Result<ObjectBody> {
         let mut request = Request::get([
             "accounts",
             account_id,
@@ -139,8 +141,43 @@ impl Client {
         if let Some(j) = bucket.jurisdiction_header() {
             request = request.header("cf-r2-jurisdiction", j);
         }
-        Ok(self.bytes(request).await?.0)
+        let mut response = self.send(request).await?;
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string);
+        let mut bytes = Vec::new();
+        let mut truncated = false;
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(|e| ApiError::Network(e.without_url().to_string()))?
+        {
+            let room = limit - bytes.len();
+            if chunk.len() >= room {
+                bytes.extend_from_slice(&chunk[..room]);
+                // Anything left over, even an empty final read, means more
+                // may follow; only an exact fit at the end is complete.
+                truncated = chunk.len() > room || response.chunk().await.ok().flatten().is_some();
+                break;
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        Ok(ObjectBody {
+            bytes,
+            content_type,
+            truncated,
+        })
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct ObjectBody {
+    pub bytes: Vec<u8>,
+    pub content_type: Option<String>,
+    /// The object is bigger than the limit and `bytes` is only the start.
+    pub truncated: bool,
 }
 
 #[cfg(test)]
@@ -197,13 +234,44 @@ mod tests {
         };
         let body = server
             .client()
-            .get_r2_object("acc", &bucket, "docs/read me.txt")
+            .get_r2_object("acc", &bucket, "docs/read me.txt", 1024)
             .await
             .unwrap();
-        assert_eq!(body, b"hello");
+        assert_eq!(body.bytes, b"hello");
+        assert!(!body.truncated);
         assert_eq!(
             server.requests()[0].target,
             "/client/v4/accounts/acc/r2/buckets/b/objects/docs%2Fread%20me.txt"
         );
+    }
+
+    #[tokio::test]
+    async fn object_downloads_stop_at_the_limit() {
+        let bucket = Bucket {
+            name: "b".into(),
+            creation_date: None,
+            location: None,
+            jurisdiction: None,
+            storage_class: None,
+        };
+        let body = "x".repeat(10_000);
+        let server = MockServer::start(vec![
+            Reply::status(200).body(body.as_str()),
+            Reply::status(200).body(body.as_str()),
+        ])
+        .await;
+        let client = server.client();
+        let cut = client
+            .get_r2_object("acc", &bucket, "k", 100)
+            .await
+            .unwrap();
+        assert_eq!(cut.bytes.len(), 100);
+        assert!(cut.truncated);
+        let exact = client
+            .get_r2_object("acc", &bucket, "k", 10_000)
+            .await
+            .unwrap();
+        assert_eq!(exact.bytes.len(), 10_000);
+        assert!(!exact.truncated);
     }
 }

@@ -13,7 +13,7 @@ use crate::actions::{NewSqlTab, OpenResource, RefreshResources, ToggleSidebar, W
 use crate::state::{Resource, Session};
 use crate::views::d1_table::TableBrowser;
 use crate::views::kv_browser::KvBrowser;
-use crate::views::placeholder::Placeholder;
+use crate::views::r2_browser::R2Browser;
 use crate::views::sidebar::Sidebar;
 use crate::views::sql_editor::SqlEditor;
 use crate::views::welcome::Welcome;
@@ -110,12 +110,12 @@ impl Workspace {
                 let panel = cx.new(|cx| KvBrowser::new(session, id, title, window, cx));
                 self.add_tab(resource, panel, window, cx);
             }
-            Resource::Worker { name } => {
-                let panel = cx.new(|cx| WorkerTail::new(session, name, window, cx));
+            Resource::R2Bucket(bucket) => {
+                let panel = cx.new(|cx| R2Browser::new(session, bucket, window, cx));
                 self.add_tab(resource, panel, window, cx);
             }
-            _ => {
-                let panel = cx.new(|cx| Placeholder::new(resource.clone(), cx));
+            Resource::Worker { name } => {
+                let panel = cx.new(|cx| WorkerTail::new(session, name, window, cx));
                 self.add_tab(resource, panel, window, cx);
             }
         }

@@ -1,7 +1,7 @@
 pub mod app;
 pub mod d1_table;
 pub mod kv_browser;
-pub mod placeholder;
+pub mod r2_browser;
 pub mod results_table;
 pub mod setup;
 pub mod sidebar;

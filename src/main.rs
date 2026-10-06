@@ -1,7 +1,3 @@
-// Client methods for the D1, KV, R2 and tail views land slice by slice; drop
-// this once every view uses them.
-#![allow(dead_code)]
-
 mod actions;
 mod cloudflare;
 #[cfg(feature = "devtools")]
@@ -31,6 +27,7 @@ fn main() {
 
             actions::bind_keys(cx);
             views::sidebar::bind_keys(cx);
+            views::r2_browser::bind_keys(cx);
             actions::set_menus(cx);
             cx.on_action(|_: &actions::Quit, cx: &mut App| quit(cx));
             cx.on_window_closed(|cx, _| {
