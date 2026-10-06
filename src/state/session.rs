@@ -12,7 +12,7 @@ use serde::Deserialize;
 use super::Loadable;
 use super::history::QueryHistory;
 use crate::cloudflare::accounts::Account;
-use crate::cloudflare::d1::{Database, TableInfo};
+use crate::cloudflare::d1::{Database, QueryIntent, StatementResult, TableInfo};
 use crate::cloudflare::kv::Namespace;
 use crate::cloudflare::r2::Bucket;
 use crate::cloudflare::workers::Script;
@@ -178,6 +178,29 @@ impl Session {
             });
         })
         .detach();
+    }
+
+    /// Runs SQL on the network runtime. Errors come back as display strings
+    /// because views only ever show them.
+    pub fn query(
+        &self,
+        database_id: &str,
+        sql: String,
+        intent: QueryIntent,
+    ) -> impl Future<Output = Result<Vec<StatementResult>, String>> + Send + 'static {
+        let (client, account, db) = (
+            self.client.clone(),
+            self.account_id(),
+            database_id.to_string(),
+        );
+        let task = runtime::run(async move { client.d1_query(&account, &db, &sql, intent).await });
+        async move {
+            match task.await {
+                Ok(Ok(results)) => Ok(results),
+                Ok(Err(e)) => Err(e.to_string()),
+                Err(e) => Err(e.to_string()),
+            }
+        }
     }
 
     /// Every openable resource currently cached, for the command palette.

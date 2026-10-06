@@ -56,6 +56,10 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("cmd-t", NewSqlTab, Some(WORKSPACE_CONTEXT)),
         KeyBinding::new("cmd-shift-d", ToggleDarkMode, None),
         KeyBinding::new("cmd-enter", RunQuery, Some(SQL_EDITOR_CONTEXT)),
+        // The editor binds cmd-enter itself (newline + event); this deeper binding,
+        // registered after gpui-component's, wins so cmd-enter runs the query.
+        KeyBinding::new("cmd-enter", RunQuery, Some("SqlEditor > Input")),
+        KeyBinding::new("cmd-shift-w", ToggleWriteMode, Some("SqlEditor > Input")),
         KeyBinding::new("cmd-shift-w", ToggleWriteMode, Some(SQL_EDITOR_CONTEXT)),
         KeyBinding::new("cmd-]", NextPage, Some(BROWSER_CONTEXT)),
         KeyBinding::new("cmd-[", PreviousPage, Some(BROWSER_CONTEXT)),

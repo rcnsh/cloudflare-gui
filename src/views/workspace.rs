@@ -9,10 +9,12 @@ use gpui_component::dock::{
     DockArea, DockLayout, DockPlacement, DockSkin, Panel, PanelId, panel_handle,
 };
 
-use crate::actions::{OpenResource, RefreshResources, ToggleSidebar, WORKSPACE_CONTEXT};
+use crate::actions::{NewSqlTab, OpenResource, RefreshResources, ToggleSidebar, WORKSPACE_CONTEXT};
 use crate::state::{Resource, Session};
+use crate::views::d1_table::TableBrowser;
 use crate::views::placeholder::Placeholder;
 use crate::views::sidebar::Sidebar;
+use crate::views::sql_editor::SqlEditor;
 use crate::views::welcome::Welcome;
 
 struct OpenTab {
@@ -25,6 +27,7 @@ pub struct Workspace {
     dock: Entity<DockArea>,
     sidebar: Entity<Sidebar>,
     tabs: Vec<OpenTab>,
+    last_database: Option<(String, String)>,
     focus_handle: FocusHandle,
     _skin: Rc<DockSkin>,
     _subscriptions: Vec<Subscription>,
@@ -58,6 +61,7 @@ impl Workspace {
             dock,
             sidebar,
             tabs: Vec::new(),
+            last_database: None,
             focus_handle: cx.focus_handle(),
             _skin: skin,
             _subscriptions: Vec::new(),
@@ -82,8 +86,54 @@ impl Workspace {
                 .update(cx, |area, cx| area.select_panel(id, window, cx));
             return;
         }
-        let panel = cx.new(|cx| Placeholder::new(resource.clone(), cx));
-        self.add_tab(resource, panel, window, cx);
+        let session = self.session.clone();
+        match resource.clone() {
+            Resource::D1Database { id, name } => {
+                self.last_database = Some((id.clone(), name.clone()));
+                let panel = cx.new(|cx| SqlEditor::new(session, id, name, None, window, cx));
+                self.add_tab(resource, panel, window, cx);
+            }
+            Resource::D1Table {
+                database_id,
+                database_name,
+                table,
+            } => {
+                self.last_database = Some((database_id.clone(), database_name.clone()));
+                let panel = cx.new(|cx| {
+                    TableBrowser::new(session, database_id, database_name, table, window, cx)
+                });
+                self.add_tab(resource, panel, window, cx);
+            }
+            _ => {
+                let panel = cx.new(|cx| Placeholder::new(resource.clone(), cx));
+                self.add_tab(resource, panel, window, cx);
+            }
+        }
+    }
+
+    /// A second SQL tab for the database used most recently. Not tracked as the
+    /// database's tab, so opening the database again focuses its first tab.
+    fn new_sql_tab(&mut self, _: &NewSqlTab, window: &mut Window, cx: &mut Context<Self>) {
+        let target = self.last_database.clone().or_else(|| {
+            self.session
+                .read(cx)
+                .d1
+                .value()
+                .and_then(|dbs| dbs.first())
+                .map(|db| (db.uuid.clone(), db.name.clone()))
+        });
+        let Some((id, name)) = target else {
+            return;
+        };
+        let session = self.session.clone();
+        let panel = cx.new(|cx| SqlEditor::new(session, id, name, None, window, cx));
+        let focus = panel.focus_handle(cx);
+        self.dock.update(cx, |area, cx| {
+            area.add_panel_view(panel_handle(panel), DockPlacement::Center, None, window, cx);
+        });
+        // The panel's elements don't exist until the dock renders it, and a
+        // focus handle that isn't in the tree can't take focus.
+        window.defer(cx, move |window, cx| focus.focus(window, cx));
     }
 
     fn add_tab<P: Panel>(
@@ -101,7 +151,9 @@ impl Workspace {
         self.dock.update(cx, |area, cx| {
             area.add_panel_view(panel_handle(panel), DockPlacement::Center, None, window, cx);
         });
-        focus.focus(window, cx);
+        // The panel's elements don't exist until the dock renders it, and a
+        // focus handle that isn't in the tree can't take focus.
+        window.defer(cx, move |window, cx| focus.focus(window, cx));
     }
 
     fn refresh(&mut self, _: &RefreshResources, _: &mut Window, cx: &mut Context<Self>) {
@@ -131,6 +183,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::open_resource))
             .on_action(cx.listener(Self::refresh))
             .on_action(cx.listener(Self::toggle_sidebar))
+            .on_action(cx.listener(Self::new_sql_tab))
             .bg(cx.theme().background)
             .child(self.dock.clone())
     }

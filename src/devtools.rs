@@ -45,7 +45,13 @@ pub fn run_script(window: AnyWindowHandle, cx: &mut App) {
                     }
                 }
                 "shot" => {
-                    let result = window.update(cx, |_, window, _| window.render_to_image());
+                    // A background window gets no display-link frames, so draw one now
+                    // instead of capturing whatever was last presented.
+                    let result = window.update(cx, |_, window, cx| {
+                        window.refresh();
+                        window.draw(cx).clear(cx);
+                        window.render_to_image()
+                    });
                     match result {
                         Ok(Ok(image)) => match image.save(&arg) {
                             Ok(()) => log::info!("saved screenshot {arg}"),

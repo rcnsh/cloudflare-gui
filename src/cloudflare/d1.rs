@@ -45,7 +45,7 @@ pub struct RawRows {
 
 /// One statement's result from the `/raw` endpoint, which keeps column order
 /// and duplicate column names that the object-shaped `/query` endpoint loses.
-#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
 pub struct StatementResult {
     #[serde(default)]
     pub results: RawRows,
