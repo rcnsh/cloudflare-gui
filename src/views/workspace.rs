@@ -12,6 +12,7 @@ use gpui_component::dock::{
 use crate::actions::{NewSqlTab, OpenResource, RefreshResources, ToggleSidebar, WORKSPACE_CONTEXT};
 use crate::state::{Resource, Session};
 use crate::views::d1_table::TableBrowser;
+use crate::views::kv_browser::KvBrowser;
 use crate::views::placeholder::Placeholder;
 use crate::views::sidebar::Sidebar;
 use crate::views::sql_editor::SqlEditor;
@@ -102,6 +103,10 @@ impl Workspace {
                 let panel = cx.new(|cx| {
                     TableBrowser::new(session, database_id, database_name, table, window, cx)
                 });
+                self.add_tab(resource, panel, window, cx);
+            }
+            Resource::KvNamespace { id, title } => {
+                let panel = cx.new(|cx| KvBrowser::new(session, id, title, window, cx));
                 self.add_tab(resource, panel, window, cx);
             }
             _ => {

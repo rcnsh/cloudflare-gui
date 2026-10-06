@@ -1,10 +1,12 @@
 pub mod app;
 pub mod d1_table;
+pub mod kv_browser;
 pub mod placeholder;
 pub mod results_table;
 pub mod setup;
 pub mod sidebar;
 pub mod sql_editor;
+pub mod value_viewer;
 pub mod welcome;
 pub mod workspace;
 
