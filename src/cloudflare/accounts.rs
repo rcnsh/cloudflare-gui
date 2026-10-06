@@ -28,13 +28,6 @@ impl Client {
             .0)
     }
 
-    pub async fn verify_account_token(&self, account_id: &str) -> Result<TokenStatus> {
-        Ok(self
-            .json(Request::get(["accounts", account_id, "tokens", "verify"]))
-            .await?
-            .0)
-    }
-
     /// Lists every account the token can see, following page numbers.
     pub async fn list_accounts(&self) -> Result<Vec<Account>> {
         let mut out = Vec::new();

@@ -56,6 +56,8 @@ Always bump them together:
   `sql::classify`, and must have write mode switched on for that tab and a confirmation dialog
   showing the exact statement and target database. `Client::d1_query` checks the classification again,
   so `QueryIntent::Read` can never send a write. The same rule applies to KV writes and R2 deletes.
+- Tails are real resources. Only create one when the user presses Start. Register it in
+  `state::tails` so it is deleted on stop, tab close or quit.
 - Never retry anything that might write. Only `Retry::Idempotent` requests retry on 5xx or network errors.
 - Be polite to the API: resource lists are cached in `state::Session` and refetched only on explicit refresh.
 - Secrets live only in the Keychain (`keychain.rs`). `cloudflare::Token` redacts itself in Debug output.
@@ -80,6 +82,30 @@ src/
     session.rs       client + account + cached resource lists
     history.rs       per-database query history
     settings.rs      non-secret preferences
+    tails.rs         tail sessions that are open, so quitting can delete them
+  devtools.rs        scripted UI driving and screenshots (feature `devtools` only)
   views/             one file per view
+    app.rs           setup flow or workspace, title bar
+    setup.rs         token entry, verification, account picker
+    workspace.rs     dock layout, opens a tab per resource
+    sidebar.rs       resource tree
+    palette.rs       cmd-K command palette
+    sql_editor.rs d1_table.rs results_table.rs     D1
+    kv_browser.rs value_viewer.rs                  KV (the viewer is shared with R2)
+    r2_browser.rs worker_tail.rs welcome.rs
 tests/fixtures/      recorded API responses (sanitized)
 ```
+
+## Driving the UI in development
+
+`cargo build --features devtools` adds a script runner. `CFGUI_SCRIPT` is a `;`-separated list
+of `wait <secs>`, `key <keystroke>`, `type <text>`, `click <x> <y>` (logical pixels),
+`shot <file.png>` and `quit`. Screenshots are rendered by the app itself, so they don't need
+screen-recording permission. Keep them in `screenshots/`, which is gitignored because the
+account name contains an email address.
+
+`CFGUI_FAKE_TAIL=1` points Worker tail tabs at a local WebSocket that sends synthetic events,
+so the tail view can be exercised without creating a tail session on the account.
+
+Unsigned debug builds get a new code signature on every build, so macOS may ask again for
+Keychain access. The app shows "Reading the API token from the Keychain…" until someone answers.

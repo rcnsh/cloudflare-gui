@@ -275,6 +275,7 @@ impl Client {
         }
     }
 
+    #[cfg(test)]
     pub fn with_retry_policy(mut self, retry: RetryPolicy) -> Self {
         self.retry = retry;
         self

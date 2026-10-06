@@ -1,6 +1,7 @@
 pub mod app;
 pub mod d1_table;
 pub mod kv_browser;
+pub mod palette;
 pub mod r2_browser;
 pub mod results_table;
 pub mod setup;

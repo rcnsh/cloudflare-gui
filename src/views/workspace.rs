@@ -4,12 +4,15 @@ use std::rc::Rc;
 
 use gpui::prelude::*;
 use gpui::{AnyWeakEntity, App, Entity, FocusHandle, Focusable, Subscription, Window, div, px};
-use gpui_component::ActiveTheme as _;
+use gpui_component::command::CommandState;
 use gpui_component::dock::{
     DockArea, DockLayout, DockPlacement, DockSkin, Panel, PanelId, panel_handle,
 };
+use gpui_component::{ActiveTheme as _, WindowExt as _};
 
-use crate::actions::{NewSqlTab, OpenResource, RefreshResources, ToggleSidebar, WORKSPACE_CONTEXT};
+use crate::actions::{
+    CommandPalette, NewSqlTab, OpenResource, RefreshResources, ToggleSidebar, WORKSPACE_CONTEXT,
+};
 use crate::state::{Resource, Session};
 use crate::views::d1_table::TableBrowser;
 use crate::views::kv_browser::KvBrowser;
@@ -30,6 +33,7 @@ pub struct Workspace {
     sidebar: Entity<Sidebar>,
     tabs: Vec<OpenTab>,
     last_database: Option<(String, String)>,
+    palette: Entity<CommandState>,
     focus_handle: FocusHandle,
     _skin: Rc<DockSkin>,
     _subscriptions: Vec<Subscription>,
@@ -64,6 +68,7 @@ impl Workspace {
             sidebar,
             tabs: Vec::new(),
             last_database: None,
+            palette: cx.new(|cx| CommandState::new(window, cx)),
             focus_handle: cx.focus_handle(),
             _skin: skin,
             _subscriptions: Vec::new(),
@@ -166,6 +171,20 @@ impl Workspace {
         window.defer(cx, move |window, cx| focus.focus(window, cx));
     }
 
+    fn command_palette(&mut self, _: &CommandPalette, window: &mut Window, cx: &mut Context<Self>) {
+        if window.has_active_dialog(cx) {
+            return;
+        }
+        let resources = self.session.read(cx).all_resources();
+        crate::views::palette::open(
+            cx.weak_entity(),
+            self.palette.clone(),
+            resources,
+            window,
+            cx,
+        );
+    }
+
     fn refresh(&mut self, _: &RefreshResources, _: &mut Window, cx: &mut Context<Self>) {
         self.session.update(cx, |s, cx| s.load_resources(true, cx));
     }
@@ -194,6 +213,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::refresh))
             .on_action(cx.listener(Self::toggle_sidebar))
             .on_action(cx.listener(Self::new_sql_tab))
+            .on_action(cx.listener(Self::command_palette))
             .bg(cx.theme().background)
             .child(self.dock.clone())
     }

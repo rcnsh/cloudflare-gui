@@ -56,12 +56,6 @@ impl ResultGrid {
         self.loading = false;
     }
 
-    pub fn clear(&mut self) {
-        self.columns.clear();
-        self.widths.clear();
-        self.rows.clear();
-    }
-
     pub fn row_count(&self) -> usize {
         self.rows.len()
     }

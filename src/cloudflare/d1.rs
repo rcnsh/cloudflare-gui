@@ -66,14 +66,6 @@ pub struct TableInfo {
     pub kind: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ColumnInfo {
-    pub name: String,
-    pub decl_type: String,
-    pub not_null: bool,
-    pub primary_key: bool,
-}
-
 /// Quotes an identifier for SQLite so table names from the schema can be
 /// interpolated safely.
 pub fn quote_ident(name: &str) -> String {
@@ -161,30 +153,6 @@ impl Client {
                 Some(TableInfo {
                     name: row.first()?.as_str()?.to_string(),
                     kind: row.get(1)?.as_str()?.to_string(),
-                })
-            })
-            .collect())
-    }
-
-    pub async fn d1_columns(
-        &self,
-        account_id: &str,
-        database_id: &str,
-        table: &str,
-    ) -> Result<Vec<ColumnInfo>> {
-        let sql = format!("PRAGMA table_info({})", quote_ident(table));
-        let results = self
-            .d1_query(account_id, database_id, &sql, QueryIntent::Read)
-            .await?;
-        // table_info columns: cid, name, type, notnull, dflt_value, pk
-        Ok(first_rows(&results)
-            .iter()
-            .filter_map(|row| {
-                Some(ColumnInfo {
-                    name: row.get(1)?.as_str()?.to_string(),
-                    decl_type: row.get(2).and_then(Value::as_str).unwrap_or("").to_string(),
-                    not_null: row.get(3).and_then(Value::as_i64).unwrap_or(0) != 0,
-                    primary_key: row.get(5).and_then(Value::as_i64).unwrap_or(0) != 0,
                 })
             })
             .collect())
@@ -282,12 +250,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tables_and_columns_parse() {
-        let server = MockServer::start(vec![
-            Reply::fixture(200, "d1_raw_tables.json"),
-            Reply::fixture(200, "d1_raw_table_info.json"),
-        ])
-        .await;
+    async fn tables_parse() {
+        let server = MockServer::start(vec![Reply::fixture(200, "d1_raw_tables.json")]).await;
         let client = server.client();
         let tables = client.d1_tables("acc", "db").await.unwrap();
         assert_eq!(
@@ -303,12 +267,6 @@ mod tests {
                 },
             ]
         );
-        let columns = client.d1_columns("acc", "db", "we\"ird").await.unwrap();
-        assert_eq!(columns.len(), 3);
-        assert!(columns[0].primary_key);
-        assert_eq!(columns[1].decl_type, "TEXT");
-        let pragma = server.requests()[1].json();
-        assert_eq!(pragma["sql"], "PRAGMA table_info(\"we\"\"ird\")");
     }
 
     #[test]

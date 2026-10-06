@@ -3,8 +3,6 @@ pub mod session;
 pub mod settings;
 pub mod tails;
 
-use std::time::Instant;
-
 pub use session::{Resource, Session, SessionEvent};
 
 /// Remote data with its loading status, so views can show spinners and
@@ -16,7 +14,6 @@ pub enum Loadable<T> {
     Loading,
     Loaded {
         value: T,
-        at: Instant,
     },
     Failed(String),
 }
@@ -29,27 +26,13 @@ impl<T> Loadable<T> {
         }
     }
 
-    pub fn is_loading(&self) -> bool {
-        matches!(self, Loadable::Loading)
-    }
-
-    pub fn error(&self) -> Option<&str> {
-        match self {
-            Loadable::Failed(e) => Some(e),
-            _ => None,
-        }
-    }
-
     /// Whether a fetch should start: never loaded, or failed and being retried.
     pub fn needs_load(&self) -> bool {
         matches!(self, Loadable::NotLoaded | Loadable::Failed(_))
     }
 
     pub fn loaded(value: T) -> Self {
-        Loadable::Loaded {
-            value,
-            at: Instant::now(),
-        }
+        Loadable::Loaded { value }
     }
 }
 
