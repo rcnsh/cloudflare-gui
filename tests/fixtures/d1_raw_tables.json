@@ -1,0 +1,1 @@
+{"result":[{"results":{"columns":["name","type"],"rows":[["posts","table"],["user stats","view"]]},"success":true,"meta":{"duration":0.11,"changes":0,"last_row_id":0,"changed_db":false,"size_after":53248,"rows_read":5,"rows_written":0}}],"errors":[],"messages":[],"success":true}

@@ -1,0 +1,55 @@
+[package]
+name = "cloudflare-gui"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "A fast, keyboard-driven native console for Cloudflare D1, KV, R2 and Worker logs."
+
+[[bin]]
+name = "cloudflare-gui"
+path = "src/main.rs"
+
+[dependencies]
+# GPUI moves fast and gpui-component pins an exact GPUI snapshot. These four
+# must be bumped together; see CLAUDE.md "Upgrading GPUI".
+gpui = { package = "gpui-pre", version = "=0.3.8" }
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.8", features = ["font-kit", "runtime_shaders"] }
+gpui-component = { version = "=0.7.1", features = ["tree-sitter-sql", "tree-sitter"] }
+gpui-kit-assets = "=0.7.1"
+
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.13", features = ["json", "query", "gzip"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
+tokio-tungstenite = { version = "0.30", features = ["rustls-tls-native-roots"] }
+futures = "0.3"
+url = "2"
+percent-encoding = "2"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
+dirs = "7"
+log = "0.4"
+env_logger = "0.11"
+keyring-core = "1"
+apple-native-keyring-store = { version = "1", features = ["keychain"] }
+
+image = { version = "0.25", default-features = false, features = ["png"], optional = true }
+
+[features]
+# Scripted UI driving and frame capture for development (see src/devtools.rs).
+devtools = ["gpui/test-support", "gpui_platform/test-support", "dep:image"]
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "net", "io-util"] }
+
+[profile.dev.package]
+# Debug builds of the renderer and text stack are unusably slow otherwise.
+gpui-pre = { opt-level = 3 }
+gpui-pre-platform = { opt-level = 3 }
+taffy = { opt-level = 3 }
+resvg = { opt-level = 3 }
+rustybuzz = { opt-level = 3 }
+ttf-parser = { opt-level = 3 }
+tree-sitter = { opt-level = 3 }
+gpui-pre-sum-tree = { opt-level = 3 }

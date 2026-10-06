@@ -1,0 +1,6 @@
+/target
+.DS_Store
+*.env
+.env*
+# Screenshots can show account names and data; keep them local.
+/screenshots/

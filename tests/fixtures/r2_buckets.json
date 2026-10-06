@@ -1,0 +1,1 @@
+{"success":true,"errors":[],"messages":[],"result":{"buckets":[{"name":"assets","creation_date":"2025-03-01T10:00:00.000Z","location":"OC","storage_class":"Standard"},{"name":"eu-backups","creation_date":"2025-04-01T10:00:00.000Z","location":"WEUR","jurisdiction":"eu","storage_class":"Standard"}]},"result_info":{"cursor":"","per_page":1000}}

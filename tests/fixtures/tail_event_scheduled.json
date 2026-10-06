@@ -1,0 +1,1 @@
+{"outcome":"ok","scriptName":"api","exceptions":[],"logs":[{"message":["tick"],"level":"info","timestamp":1759830300001}],"eventTimestamp":1759830300000,"event":{"cron":"*/5 * * * *","scheduledTime":1759830300000}}
