@@ -17,6 +17,8 @@ use crate::views::setup::{SetupEvent, SetupView};
 use crate::views::workspace::Workspace;
 
 enum Screen {
+    /// Waiting on the Keychain, which may be showing an access prompt.
+    Loading,
     Setup(Entity<SetupView>),
     Workspace(Entity<Workspace>),
 }
@@ -33,29 +35,36 @@ impl AppView {
         let appearance = cx.observe_window_appearance(window, |_, window, cx| {
             Theme::sync_system_appearance(Some(window), cx);
         });
-        let token = keychain::load_token().unwrap_or_else(|e| {
-            log::error!("{e:#}");
-            None
-        });
-        let settings = Settings::load();
-        let mut this = Self {
-            screen: Screen::Setup(cx.new(|cx| SetupView::new(None, window, cx))),
+        // The Keychain can block for as long as its access prompt is open, so
+        // read it off the main thread and keep the window responsive.
+        let load = cx
+            .background_executor()
+            .spawn(async { keychain::load_token() });
+        cx.spawn_in(window, async move |this, cx| {
+            let token = load.await.unwrap_or_else(|e| {
+                log::error!("{e:#}");
+                None
+            });
+            let settings = Settings::load();
+            let _ = this.update_in(cx, |this, window, cx| match (token, settings.account_id) {
+                (Some(token), Some(id)) => {
+                    let account = Account {
+                        name: settings.account_name.unwrap_or_else(|| id.clone()),
+                        id,
+                        kind: None,
+                    };
+                    this.show_workspace(Client::new(token), account, window, cx);
+                }
+                (token, _) => this.show_setup(token, window, cx),
+            });
+        })
+        .detach();
+        Self {
+            screen: Screen::Loading,
             focus_handle: cx.focus_handle(),
             _screen_subscription: None,
             _appearance: appearance,
-        };
-        match (token, settings.account_id) {
-            (Some(token), Some(id)) => {
-                let account = Account {
-                    name: settings.account_name.unwrap_or_else(|| id.clone()),
-                    id,
-                    kind: None,
-                };
-                this.show_workspace(Client::new(token), account, window, cx);
-            }
-            (token, _) => this.show_setup(token, window, cx),
         }
-        this
     }
 
     fn show_setup(&mut self, token: Option<Token>, window: &mut Window, cx: &mut Context<Self>) {
@@ -106,7 +115,7 @@ impl AppView {
     fn switch_account(&mut self, _: &SwitchAccount, window: &mut Window, cx: &mut Context<Self>) {
         let token = match &self.screen {
             Screen::Workspace(w) => Some(w.read(cx).session.read(cx).client.token().clone()),
-            Screen::Setup(_) => None,
+            Screen::Setup(_) | Screen::Loading => None,
         };
         self.show_setup(token, window, cx);
     }
@@ -136,7 +145,7 @@ impl Render for AppView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let account = match &self.screen {
             Screen::Workspace(w) => Some(w.read(cx).session.read(cx).account.name.clone()),
-            Screen::Setup(_) => None,
+            Screen::Setup(_) | Screen::Loading => None,
         };
         let title = h_flex()
             .gap_2()
@@ -157,9 +166,17 @@ impl Render for AppView {
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
             .child(TitleBar::new().child(title))
-            .child(div().flex_1().min_h_0().map(|this| match &self.screen {
-                Screen::Setup(view) => this.child(view.clone()),
-                Screen::Workspace(view) => this.child(view.clone()),
+            .child(div().flex_1().min_h_0().map(|this| {
+                match &self.screen {
+                    Screen::Loading => this.flex().items_center().justify_center().child(
+                        div()
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .child("Reading the API token from the Keychain…"),
+                    ),
+                    Screen::Setup(view) => this.child(view.clone()),
+                    Screen::Workspace(view) => this.child(view.clone()),
+                }
             }))
     }
 }
