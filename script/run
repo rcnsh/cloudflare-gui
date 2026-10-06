@@ -1,0 +1,18 @@
+#!/bin/sh
+# Cargo runner (see .cargo/config.toml): signs the app before launching it.
+#
+# The linker signs debug builds ad hoc, and macOS ties "Always Allow" for the
+# Keychain to that exact build, so every rebuild asked again. Signing with a
+# stable identity keeps the trust across rebuilds. Without the identity (CI,
+# a fresh machine) this just runs the binary.
+set -eu
+identity="${CFGUI_SIGN_IDENTITY:-cloudflare-gui (self-signed)}"
+binary="$1"
+
+# Test binaries never touch the Keychain, so only the app needs signing.
+if [ "$(basename "$binary")" = "cloudflare-gui" ] &&
+  security find-identity -p codesigning 2>/dev/null | grep -qF "\"$identity\""; then
+  codesign --force --sign "$identity" --identifier dev.cloudflare-gui "$binary" 2>/dev/null ||
+    echo "script/run: couldn't sign with \"$identity\"; the Keychain may ask again" >&2
+fi
+exec "$@"

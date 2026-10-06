@@ -1,0 +1,4 @@
+# Sign the app with a stable identity before `cargo run` launches it, so the
+# Keychain's "Always Allow" survives rebuilds. See script/run.
+[target.'cfg(target_os = "macos")']
+runner = "script/run"

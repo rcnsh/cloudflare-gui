@@ -5,7 +5,7 @@ Native macOS console for Cloudflare D1, KV, R2 and live Worker logs. Rust + GPUI
 ## Build and run
 
 ```sh
-cargo run              # debug (GPUI and text crates are built with opt-level 3 anyway)
+cargo run              # debug, signed by script/run so Keychain access sticks (GPUI and text crates are built with opt-level 3 anyway)
 cargo run --release
 ./script/check         # cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
 RUST_LOG=cloudflare_gui=debug cargo run   # verbose logging (never logs the token)
@@ -107,5 +107,13 @@ account name contains an email address.
 `CFGUI_FAKE_TAIL=1` points Worker tail tabs at a local WebSocket that sends synthetic events,
 so the tail view can be exercised without creating a tail session on the account.
 
-Unsigned debug builds get a new code signature on every build, so macOS may ask again for
-Keychain access. The app shows "Reading the API token from the Keychain…" until someone answers.
+### Keychain prompts
+
+The linker signs debug builds ad hoc, and macOS ties "Always Allow" to that exact build, so every
+rebuild used to prompt again. `.cargo/config.toml` makes `script/run` the cargo runner. It
+re-signs the app with the local self-signed identity `cloudflare-gui (self-signed)` (override
+with `CFGUI_SIGN_IDENTITY`) and a fixed identifier, `dev.cloudflare-gui`, so the trust survives
+rebuilds. Launch with `cargo run` or `script/run target/debug/cloudflare-gui`. Running
+`target/debug/cloudflare-gui` directly skips the signing and brings the prompt back. Without the
+identity (CI, a fresh machine) the runner just runs the binary. While a prompt is open, the window
+shows "Reading the API token from the Keychain…".
