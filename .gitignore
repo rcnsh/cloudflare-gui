@@ -4,3 +4,4 @@
 .env*
 # Screenshots can show account names and data; keep them local.
 /screenshots/
+/dist/
