@@ -44,6 +44,12 @@ pub fn spawn<T: Send + 'static>(future: impl Future<Output = T> + Send + 'static
     runtime().spawn(future)
 }
 
+/// Blocks the calling thread on `future`. Only for the quit path, where there
+/// is no executor left to await on; never call it from a tokio thread.
+pub fn block_on<T>(future: impl Future<Output = T>) -> T {
+    runtime().block_on(future)
+}
+
 /// Aborts a task when dropped, so a closed view stops its background work.
 pub struct AbortOnDrop(pub AbortHandle);
 

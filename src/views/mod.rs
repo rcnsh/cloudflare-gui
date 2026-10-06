@@ -8,6 +8,7 @@ pub mod sidebar;
 pub mod sql_editor;
 pub mod value_viewer;
 pub mod welcome;
+pub mod worker_tail;
 pub mod workspace;
 
 /// The boilerplate every dock panel needs: a focus handle getter and the

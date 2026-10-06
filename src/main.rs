@@ -32,10 +32,10 @@ fn main() {
             actions::bind_keys(cx);
             views::sidebar::bind_keys(cx);
             actions::set_menus(cx);
-            cx.on_action(|_: &actions::Quit, cx: &mut App| cx.quit());
+            cx.on_action(|_: &actions::Quit, cx: &mut App| quit(cx));
             cx.on_window_closed(|cx, _| {
                 if cx.windows().is_empty() {
-                    cx.quit();
+                    quit(cx);
                 }
             })
             .detach();
@@ -58,4 +58,11 @@ fn main() {
             let _ = window;
             cx.activate(true);
         });
+}
+
+/// GPUI gives quit hooks only a fraction of a second, too little for a
+/// request, so open tails are deleted here before quitting.
+fn quit(cx: &mut App) {
+    state::tails::close_all_blocking(std::time::Duration::from_secs(3));
+    cx.quit();
 }

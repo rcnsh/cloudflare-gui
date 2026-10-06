@@ -68,6 +68,9 @@ pub struct TailEvent {
     #[serde(default)]
     pub event_timestamp: i64,
     pub event: Option<Value>,
+    /// The message as received, for the detail view.
+    #[serde(skip)]
+    pub raw: Value,
 }
 
 impl TailEvent {
@@ -275,7 +278,10 @@ async fn stream_once(
 }
 
 pub fn parse_tail_event(payload: &[u8]) -> serde_json::Result<TailEvent> {
-    serde_json::from_slice(payload)
+    let raw: Value = serde_json::from_slice(payload)?;
+    let mut event: TailEvent = serde_json::from_value(raw.clone())?;
+    event.raw = raw;
+    Ok(event)
 }
 
 #[cfg(test)]
@@ -347,5 +353,56 @@ mod tests {
         let none =
             parse_tail_event(br#"{"outcome":"ok","eventTimestamp":1,"event":null}"#).unwrap();
         assert_eq!(none.trigger(), "unknown trigger");
+    }
+
+    /// A local server speaking the tail protocol: the client must ask for
+    /// `trace-v1`, say `{"debug":false}` first, and deliver events in order.
+    // The handshake callback's error type is tungstenite's, not ours.
+    #[allow(clippy::result_large_err)]
+    #[tokio::test]
+    async fn streams_events_over_the_trace_protocol() {
+        use tokio_tungstenite::tungstenite::handshake::server;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut asked_for = None;
+            let callback = |request: &server::Request, mut response: server::Response| {
+                asked_for = request.headers().get("Sec-WebSocket-Protocol").cloned();
+                response.headers_mut().insert(
+                    "Sec-WebSocket-Protocol",
+                    HeaderValue::from_static("trace-v1"),
+                );
+                Ok(response)
+            };
+            let mut socket = tokio_tungstenite::accept_hdr_async(stream, callback)
+                .await
+                .unwrap();
+            let hello = socket.next().await.unwrap().unwrap();
+            socket
+                .send(Message::text(fixture("tail_event_request.json")))
+                .await
+                .unwrap();
+            socket.close(None).await.unwrap();
+            (asked_for, hello)
+        });
+
+        let (tx, mut rx) = futures::channel::mpsc::unbounded();
+        let stream = tokio::spawn(stream_tail(url, tx));
+        assert!(matches!(rx.next().await, Some(TailUpdate::Connected)));
+        match rx.next().await {
+            Some(TailUpdate::Event(event)) => assert_eq!(event.outcome, "exception"),
+            other => panic!("expected an event, got {other:?}"),
+        }
+        assert!(matches!(
+            rx.next().await,
+            Some(TailUpdate::Reconnecting { attempt: 1, .. })
+        ));
+        stream.abort();
+
+        let (asked_for, hello) = server.await.unwrap();
+        assert_eq!(asked_for.unwrap(), "trace-v1");
+        assert_eq!(hello.into_text().unwrap().as_str(), r#"{"debug":false}"#);
     }
 }

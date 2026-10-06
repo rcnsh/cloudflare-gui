@@ -17,6 +17,7 @@ use crate::views::placeholder::Placeholder;
 use crate::views::sidebar::Sidebar;
 use crate::views::sql_editor::SqlEditor;
 use crate::views::welcome::Welcome;
+use crate::views::worker_tail::WorkerTail;
 
 struct OpenTab {
     resource: Resource,
@@ -107,6 +108,10 @@ impl Workspace {
             }
             Resource::KvNamespace { id, title } => {
                 let panel = cx.new(|cx| KvBrowser::new(session, id, title, window, cx));
+                self.add_tab(resource, panel, window, cx);
+            }
+            Resource::Worker { name } => {
+                let panel = cx.new(|cx| WorkerTail::new(session, name, window, cx));
                 self.add_tab(resource, panel, window, cx);
             }
             _ => {

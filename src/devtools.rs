@@ -6,8 +6,12 @@
 //!   `wait 1.5`   pause, in seconds
 //!   `key cmd-k`  press a keystroke
 //!   `type users` type text into whatever has focus
+//!   `click 640 300` left-click at window coordinates (logical pixels)
 //!   `shot a.png` save the current frame as PNG
 //!   `quit`
+//!
+//! With `CFGUI_FAKE_TAIL=1`, Worker tail tabs connect to a local WebSocket
+//! that emits synthetic events instead of creating a tail on the account.
 
 use std::time::Duration;
 
@@ -34,6 +38,7 @@ pub fn run_script(window: AnyWindowHandle, cx: &mut App) {
                         .await;
                 }
                 "key" => press(window, cx, &arg),
+                "click" => click(window, cx, &arg),
                 "type" => {
                     for ch in arg.chars() {
                         let key = if ch == ' ' {
@@ -72,6 +77,49 @@ pub fn run_script(window: AnyWindowHandle, cx: &mut App) {
     .detach();
 }
 
+fn click(window: AnyWindowHandle, cx: &mut AsyncApp, arg: &str) {
+    use gpui::{
+        Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput, point,
+        px,
+    };
+    let mut coords = arg.split_whitespace().filter_map(|n| n.parse::<f32>().ok());
+    let (Some(x), Some(y)) = (coords.next(), coords.next()) else {
+        log::warn!("bad click {arg:?}, expected `click x y`");
+        return;
+    };
+    let position = point(px(x), px(y));
+    let _ = window.update(cx, |_, window, cx| {
+        let modifiers = Modifiers::default();
+        window.dispatch_event(
+            PlatformInput::MouseMove(MouseMoveEvent {
+                position,
+                pressed_button: None,
+                modifiers,
+            }),
+            cx,
+        );
+        window.dispatch_event(
+            PlatformInput::MouseDown(MouseDownEvent {
+                button: MouseButton::Left,
+                position,
+                modifiers,
+                click_count: 1,
+                first_mouse: false,
+            }),
+            cx,
+        );
+        window.dispatch_event(
+            PlatformInput::MouseUp(MouseUpEvent {
+                button: MouseButton::Left,
+                position,
+                modifiers,
+                click_count: 1,
+            }),
+            cx,
+        );
+    });
+}
+
 fn press(window: AnyWindowHandle, cx: &mut AsyncApp, keys: &str) {
     match Keystroke::parse(keys) {
         Ok(keystroke) => {
@@ -79,4 +127,93 @@ fn press(window: AnyWindowHandle, cx: &mut AsyncApp, keys: &str) {
         }
         Err(e) => log::warn!("bad keystroke {keys:?}: {e}"),
     }
+}
+
+/// The URL of a local fake tail server, started on first use, when
+/// `CFGUI_FAKE_TAIL` is set.
+pub fn fake_tail_url() -> Option<String> {
+    static URL: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    URL.get_or_init(|| {
+        std::env::var_os("CFGUI_FAKE_TAIL")?;
+        let listener = crate::runtime::block_on(tokio::net::TcpListener::bind("127.0.0.1:0"))
+            .map_err(|e| log::error!("fake tail server: {e}"))
+            .ok()?;
+        let url = format!("ws://{}", listener.local_addr().ok()?);
+        drop(crate::runtime::spawn(serve_fake_tail(listener)));
+        log::info!("fake tail server at {url}");
+        Some(url)
+    })
+    .clone()
+}
+
+// The handshake callback's error type is tungstenite's, not ours.
+#[allow(clippy::result_large_err)]
+async fn serve_fake_tail(listener: tokio::net::TcpListener) {
+    use futures::{SinkExt as _, StreamExt as _};
+    use tokio_tungstenite::tungstenite::{Message, handshake::server, http::HeaderValue};
+
+    while let Ok((stream, _)) = listener.accept().await {
+        tokio::spawn(async move {
+            let echo = |_: &server::Request, mut response: server::Response| {
+                response.headers_mut().insert(
+                    "Sec-WebSocket-Protocol",
+                    HeaderValue::from_static("trace-v1"),
+                );
+                Ok(response)
+            };
+            let Ok(mut socket) = tokio_tungstenite::accept_hdr_async(stream, echo).await else {
+                return;
+            };
+            let _hello = socket.next().await;
+            for n in 0u64.. {
+                let event = fake_event(n);
+                if socket.send(Message::text(event.to_string())).await.is_err() {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(if n < 30 { 40 } else { 900 })).await;
+            }
+        });
+    }
+}
+
+fn fake_event(n: u64) -> serde_json::Value {
+    let now = chrono::Utc::now().timestamp_millis();
+    let path = [
+        "/api/items",
+        "/api/users/42",
+        "/",
+        "/assets/app.js",
+        "/api/search?q=tea",
+    ][n as usize % 5];
+    let mut logs = vec![serde_json::json!({
+        "message": [format!("handled {path}"), {"ms": 3 + n % 17}],
+        "level": "log",
+        "timestamp": now,
+    })];
+    if n % 4 == 1 {
+        logs.push(serde_json::json!({
+            "message": [format!("cache miss for items:{n}")],
+            "level": "warn",
+            "timestamp": now,
+        }));
+    }
+    if n % 6 == 3 {
+        logs.push(serde_json::json!({ "message": ["query plan", {"rows": n}], "level": "debug", "timestamp": now }));
+    }
+    let failed = n % 9 == 7;
+    serde_json::json!({
+        "outcome": if failed { "exception" } else { "ok" },
+        "scriptName": "example-worker",
+        "exceptions": if failed {
+            serde_json::json!([{ "name": "TypeError", "message": "Cannot read properties of undefined (reading 'id')", "timestamp": now }])
+        } else {
+            serde_json::json!([])
+        },
+        "logs": logs,
+        "eventTimestamp": now,
+        "event": {
+            "request": { "url": format!("https://example.com{path}"), "method": if n % 7 == 2 { "POST" } else { "GET" }, "headers": {} },
+            "response": { "status": if failed { 500 } else { 200 } }
+        }
+    })
 }

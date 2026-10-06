@@ -20,6 +20,7 @@ actions!(
         PreviousPage,
         LoadMore,
         FocusSearch,
+        ToggleTail,
         ToggleTailPause,
         ClearLog,
         SwitchAccount,
@@ -66,6 +67,7 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("cmd-shift-l", LoadMore, Some(BROWSER_CONTEXT)),
         KeyBinding::new("cmd-f", FocusSearch, Some(BROWSER_CONTEXT)),
         KeyBinding::new("cmd-f", FocusSearch, Some(TAIL_CONTEXT)),
+        KeyBinding::new("cmd-enter", ToggleTail, Some(TAIL_CONTEXT)),
         KeyBinding::new("cmd-.", ToggleTailPause, Some(TAIL_CONTEXT)),
         KeyBinding::new("cmd-shift-k", ClearLog, Some(TAIL_CONTEXT)),
     ]);
@@ -99,6 +101,7 @@ pub fn set_menus(cx: &mut App) {
             MenuItem::action("Load More", LoadMore),
         ]),
         Menu::new("Logs").items([
+            MenuItem::action("Start / Stop Tail", ToggleTail),
             MenuItem::action("Pause / Resume", ToggleTailPause),
             MenuItem::action("Clear", ClearLog),
         ]),
