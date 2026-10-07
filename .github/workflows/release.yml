@@ -2,6 +2,10 @@ name: Release
 
 # Push a tag like v0.2.0 to build a universal macOS app and publish it as a
 # GitHub release. The tag must match the version in Cargo.toml.
+#
+# Each architecture builds on its own runner, alongside the tests, since one
+# release build takes most of a runner's cores; the release job then joins
+# the two binaries into one app.
 on:
   push:
     tags: ["v*"]
@@ -14,21 +18,16 @@ on:
 permissions:
   contents: write
 
+env:
+  TAG: ${{ github.event.inputs.tag || github.ref_name }}
+
 jobs:
-  release:
+  test:
     runs-on: macos-latest
-    env:
-      TAG: ${{ github.event.inputs.tag || github.ref_name }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ env.TAG }}
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-apple-darwin, x86_64-apple-darwin
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: release
 
       - name: Check the tag matches Cargo.toml
         run: |
@@ -37,24 +36,67 @@ jobs:
             echo "Tag $TAG doesn't match Cargo.toml version $version" >&2
             exit 1
           fi
-          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-test
 
       - name: Test
         run: cargo test
 
-      - name: Build for Apple Silicon and Intel
-        run: |
-          cargo build --release --target aarch64-apple-darwin
-          cargo build --release --target x86_64-apple-darwin
+  build:
+    strategy:
+      matrix:
+        target: [aarch64-apple-darwin, x86_64-apple-darwin]
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      # One cache per target: both legs share the job id, so without the
+      # target in the key they would overwrite each other's cache.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bin-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/cloudflare-gui
+          if-no-files-found: error
+          retention-days: 1
+
+  release:
+    needs: [test, build]
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: bin-*
 
       - name: Make a universal app
         run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          echo "VERSION=$version" >> "$GITHUB_ENV"
           mkdir -p dist
           lipo -create -output dist/cloudflare-gui \
-            target/aarch64-apple-darwin/release/cloudflare-gui \
-            target/x86_64-apple-darwin/release/cloudflare-gui
+            bin-aarch64-apple-darwin/cloudflare-gui \
+            bin-x86_64-apple-darwin/cloudflare-gui
+          # Artifacts don't keep the executable bit.
+          chmod +x dist/cloudflare-gui
           lipo -info dist/cloudflare-gui
-          ./script/bundle dist/cloudflare-gui "$VERSION" dist
+          ./script/bundle dist/cloudflare-gui "$version" dist
 
       - name: Publish the release
         env:
