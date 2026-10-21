@@ -180,4 +180,49 @@ mod tests {
         assert_eq!(labels, ["D1 databases", "D1 tables", "Workers", "Commands"]);
         assert_eq!(sections[1].entries[0].0, "main.users");
     }
+
+    #[test]
+    fn commands_are_always_offered_last() {
+        let sections = sections(vec![]);
+        assert_eq!(sections.len(), 1);
+        assert_eq!(sections[0].label, "Commands");
+        let labels: Vec<_> = sections[0].entries.iter().map(|e| e.0.as_str()).collect();
+        assert_eq!(
+            labels,
+            [
+                "Refresh resources",
+                "New SQL tab",
+                "Toggle sidebar",
+                "Toggle dark mode",
+                "Switch account…",
+            ]
+        );
+    }
+
+    #[test]
+    fn storage_groups_keep_their_resource() {
+        let bucket = crate::cloudflare::r2::Bucket {
+            name: "assets".into(),
+            creation_date: None,
+            location: None,
+            jurisdiction: None,
+            storage_class: None,
+        };
+        let sections = sections(vec![
+            Resource::R2Bucket(bucket.clone()),
+            Resource::KvNamespace {
+                id: "ns".into(),
+                title: "CACHE".into(),
+            },
+        ]);
+        let labels: Vec<_> = sections.iter().map(|s| s.label).collect();
+        assert_eq!(labels, ["KV namespaces", "R2 buckets", "Commands"]);
+        match &sections[1].entries[0] {
+            (label, _, Entry::Resource(Resource::R2Bucket(b))) => {
+                assert_eq!(label, "assets");
+                assert_eq!(b, &bucket);
+            }
+            _ => panic!("expected the bucket"),
+        }
+    }
 }

@@ -246,3 +246,13 @@ impl Render for SetupView {
             )
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn account_ids_are_shortened_to_eight_characters() {
+        assert_eq!(short_id("0123456789abcdef0123456789abcdef"), "01234567…");
+    }
+}

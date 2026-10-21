@@ -532,4 +532,209 @@ mod tests {
             "a write must never be sent twice"
         );
     }
+
+    #[test]
+    fn backoff_honours_retry_after_and_caps_everything() {
+        let policy = RetryPolicy {
+            max_attempts: 4,
+            base_delay: Duration::from_millis(100),
+            max_delay: Duration::from_secs(2),
+        };
+        assert_eq!(
+            policy.backoff(1, Some(Duration::from_secs(1))),
+            Duration::from_secs(1)
+        );
+        assert_eq!(
+            policy.backoff(1, Some(Duration::from_secs(600))),
+            Duration::from_secs(2),
+            "a huge Retry-After must not stall the app"
+        );
+        // Exponential plus up to 250ms of jitter.
+        for attempt in 1..=3 {
+            let delay = policy.backoff(attempt, None);
+            let floor = Duration::from_millis(100 << attempt);
+            assert!(delay >= floor && delay < floor + Duration::from_millis(250));
+        }
+        assert_eq!(policy.backoff(30, None), Duration::from_secs(2));
+    }
+
+    #[test]
+    fn api_errors_describe_every_message() {
+        let err = ApiError::Api {
+            status: StatusCode::BAD_REQUEST,
+            errors: vec![
+                ApiMessage {
+                    code: 7003,
+                    message: "Could not route".into(),
+                },
+                ApiMessage {
+                    code: 0,
+                    message: "no code here".into(),
+                },
+            ],
+        };
+        assert_eq!(
+            err.to_string(),
+            "Could not route (code 7003); no code here [HTTP 400]"
+        );
+        let bare = ApiError::Api {
+            status: StatusCode::NOT_FOUND,
+            errors: vec![],
+        };
+        assert_eq!(bare.to_string(), "Cloudflare returned HTTP 404");
+    }
+
+    #[test]
+    fn only_401_and_403_count_as_auth_failures() {
+        let api = |status| ApiError::Api {
+            status,
+            errors: vec![],
+        };
+        assert!(api(StatusCode::UNAUTHORIZED).is_auth());
+        assert!(api(StatusCode::FORBIDDEN).is_auth());
+        assert!(!api(StatusCode::NOT_FOUND).is_auth());
+        assert!(!ApiError::RateLimited.is_auth());
+        assert_eq!(
+            ApiError::RateLimited.status(),
+            Some(StatusCode::TOO_MANY_REQUESTS)
+        );
+        assert_eq!(ApiError::Network("x".into()).status(), None);
+        assert_eq!(ApiError::Decode("x".into()).status(), None);
+    }
+
+    #[test]
+    fn envelopes_without_a_result_or_json_are_decode_errors() {
+        let err = parse_envelope::<Vec<u8>>(StatusCode::OK, b"<html>oops</html>").unwrap_err();
+        assert!(matches!(err, ApiError::Decode(_)), "{err:?}");
+        let err = parse_envelope::<Vec<u8>>(StatusCode::OK, br#"{"success":true,"result":null}"#)
+            .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "unexpected response from Cloudflare: response had no result"
+        );
+        // `success` defaults to false, so a body that omits it is a failure.
+        let err = parse_envelope::<Vec<u8>>(StatusCode::OK, br#"{"result":[1]}"#).unwrap_err();
+        assert!(matches!(err, ApiError::Api { .. }), "{err:?}");
+    }
+
+    #[test]
+    fn envelopes_keep_result_info() {
+        let (result, info) = parse_envelope::<Vec<u8>>(
+            StatusCode::OK,
+            br#"{"success":true,"errors":[],"result":[1,2],"result_info":{"page":2,"total_count":7,"cursor":"abc"}}"#,
+        )
+        .unwrap();
+        assert_eq!(result, [1, 2]);
+        let info = info.unwrap();
+        assert_eq!(info.page, Some(2.0));
+        assert_eq!(info.total_count, Some(7.0));
+        assert_eq!(info.next_cursor().as_deref(), Some("abc"));
+    }
+
+    #[test]
+    fn tokens_are_trimmed_and_urls_ignore_a_missing_trailing_slash() {
+        assert_eq!(Token::new("\tabc \n").expose(), "abc");
+        let client = Client::with_base(
+            Token::new("t"),
+            Url::parse("http://127.0.0.1:1/client/v4").unwrap(),
+        );
+        assert_eq!(
+            client.url(&["accounts"], &[]).as_str(),
+            "http://127.0.0.1:1/client/v4/accounts"
+        );
+    }
+
+    #[test]
+    fn optional_query_values_are_left_out() {
+        let req = Request::get(["x"])
+            .query_opt("cursor", None::<&str>)
+            .query_opt("prefix", Some("p"));
+        assert_eq!(req.query, [("prefix", "p".to_string())]);
+        assert_eq!(req.retry, Retry::Idempotent);
+        assert_eq!(Request::delete(["x"]).retry, Retry::RateLimitOnly);
+        assert_eq!(
+            Request::post(["x"], serde_json::json!({})).retry,
+            Retry::RateLimitOnly
+        );
+    }
+
+    #[tokio::test]
+    async fn client_errors_are_not_retried_and_keep_the_status() {
+        let server = MockServer::start(vec![
+            Reply::status(404).body("not json"),
+            Reply::fixture(200, "accounts_list.json"),
+        ])
+        .await;
+        let err = server.client().list_accounts().await.unwrap_err();
+        assert_eq!(err.status(), Some(StatusCode::NOT_FOUND));
+        assert_eq!(err.to_string(), "Cloudflare returned HTTP 404");
+        assert_eq!(server.requests().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn writes_are_retried_after_an_outright_rate_limit() {
+        let server = MockServer::start(vec![
+            Reply::status(429).header("Retry-After", "0"),
+            Reply::fixture(200, "d1_raw_select.json"),
+        ])
+        .await;
+        server
+            .client()
+            .d1_query("acc", "db", "DELETE FROM t", d1::QueryIntent::Write)
+            .await
+            .unwrap();
+        let seen = server.requests();
+        assert_eq!(seen.len(), 2, "a 429 means the write never ran");
+        assert_eq!(seen[0].body, seen[1].body);
+    }
+
+    #[tokio::test]
+    async fn persistent_rate_limits_become_rate_limited() {
+        let replies = (0..4)
+            .map(|_| Reply::status(429).header("Retry-After", "0"))
+            .collect();
+        let server = MockServer::start(replies).await;
+        let err = server.client().list_accounts().await.unwrap_err();
+        assert!(matches!(err, ApiError::RateLimited), "{err:?}");
+        assert_eq!(server.requests().len(), 4);
+    }
+
+    #[tokio::test]
+    async fn connection_failures_are_network_errors() {
+        // Bind and drop a listener so the port is very likely closed.
+        let addr = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap()
+            .local_addr()
+            .unwrap();
+        let client = Client::with_base(
+            Token::new("t"),
+            Url::parse(&format!("http://{addr}/client/v4/")).unwrap(),
+        )
+        .with_retry_policy(RetryPolicy {
+            max_attempts: 2,
+            base_delay: Duration::from_millis(1),
+            max_delay: Duration::from_millis(5),
+        });
+        let err = client.list_accounts().await.unwrap_err();
+        assert!(matches!(err, ApiError::Network(_)), "{err:?}");
+        assert!(!err.to_string().contains(&addr.to_string()), "{err}");
+    }
+
+    #[tokio::test]
+    async fn posts_send_json_with_the_bearer_token() {
+        let server = MockServer::start(vec![Reply::fixture(200, "d1_raw_select.json")]).await;
+        server
+            .client()
+            .d1_query("acc", "db", "SELECT 1", d1::QueryIntent::Read)
+            .await
+            .unwrap();
+        let req = &server.requests()[0];
+        assert_eq!(req.authorization.as_deref(), Some("Bearer test-token"));
+        assert_eq!(req.header("content-type"), Some("application/json"));
+        assert!(
+            req.header("user-agent")
+                .is_some_and(|ua| ua.starts_with("cloudflare-gui/"))
+        );
+    }
 }

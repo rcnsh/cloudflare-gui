@@ -38,7 +38,7 @@ src/
     mod.rs           scripted UI driving, frame capture, fake tail server
     demo.rs          offline demo account: fake REST API, D1 on in-memory SQLite
 tests/fixtures/      recorded API responses, sanitized
-script/              check (CI), run (cargo runner, signs debug builds), bundle (release .app)
+script/              check (CI), test, run (cargo runner, signs debug builds), bundle (release .app)
 ```
 
 ## Data flow
@@ -95,5 +95,7 @@ Every network future runs on the tokio runtime in `runtime.rs`; GPUI tasks await
 
 `cargo test` covers the client against `cloudflare::testing`'s local server and the fixtures in
 `tests/fixtures/` (envelope parsing, retries, pagination, the D1 write guard), plus `sql.rs`,
-tail event parsing, history, settings and a few pure view helpers. There are no UI tests; `devtools` scripts are used for
-manual checks and screenshots.
+tail event parsing and the tail WebSocket, the session cache, history, settings, tail cleanup on quit, and the
+pure view helpers (formatting, value classification, result grid). There are no UI tests; `devtools` scripts are
+used for manual checks and screenshots. Tests marked `#[ignore]` document known bugs; run them with
+`script/test -- --ignored`.

@@ -255,3 +255,125 @@ pub fn flatten<T>(result: anyhow::Result<cloudflare::Result<T>>) -> Loadable<T> 
         Err(e) => Loadable::Failed(e.to_string()),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cloudflare::{ApiError, Token};
+
+    fn session() -> Session {
+        Session {
+            client: Client::new(Token::new("t")),
+            account: Account {
+                id: "acc".into(),
+                name: "Example".into(),
+                kind: None,
+            },
+            d1: Loadable::NotLoaded,
+            kv: Loadable::NotLoaded,
+            r2: Loadable::NotLoaded,
+            workers: Loadable::NotLoaded,
+            tables: HashMap::new(),
+            // Not `QueryHistory::load()`, which would read the real data directory.
+            history: QueryHistory::default(),
+        }
+    }
+
+    fn db(uuid: &str, name: &str) -> Database {
+        Database {
+            uuid: uuid.into(),
+            name: name.into(),
+            created_at: None,
+            version: None,
+            jurisdiction: None,
+        }
+    }
+
+    #[test]
+    fn nothing_is_listed_before_anything_loads() {
+        let mut s = session();
+        assert!(s.all_resources().is_empty());
+        s.d1 = Loadable::Failed("nope".into());
+        s.kv = Loadable::Loading;
+        assert!(s.all_resources().is_empty());
+    }
+
+    #[test]
+    fn all_resources_lists_kinds_in_order_with_loaded_tables_under_their_database() {
+        let mut s = session();
+        s.workers = Loadable::loaded(vec![Script {
+            id: "api".into(),
+            modified_on: None,
+            created_on: None,
+        }]);
+        s.kv = Loadable::loaded(vec![Namespace {
+            id: "ns1".into(),
+            title: "CACHE".into(),
+        }]);
+        s.d1 = Loadable::loaded(vec![db("db1", "main"), db("db2", "logs")]);
+        s.tables.insert(
+            "db1".into(),
+            Loadable::loaded(vec![TableInfo {
+                name: "users".into(),
+                kind: "table".into(),
+            }]),
+        );
+        // A table list that's still loading adds nothing.
+        s.tables.insert("db2".into(), Loadable::Loading);
+        let labels: Vec<_> = s
+            .all_resources()
+            .iter()
+            .map(|r| format!("{}: {}", r.kind(), r.label()))
+            .collect();
+        assert_eq!(
+            labels,
+            [
+                "D1 database: main",
+                "D1 table: main.users",
+                "D1 database: logs",
+                "KV namespace: CACHE",
+                "Worker: api",
+            ]
+        );
+    }
+
+    #[test]
+    fn resources_carry_what_a_tab_needs() {
+        let bucket = Bucket {
+            name: "assets".into(),
+            creation_date: None,
+            location: None,
+            jurisdiction: Some("eu".into()),
+            storage_class: None,
+        };
+        let mut s = session();
+        s.r2 = Loadable::loaded(vec![bucket.clone()]);
+        assert_eq!(s.all_resources(), [Resource::R2Bucket(bucket)]);
+        assert_eq!(s.all_resources()[0].kind(), "R2 bucket");
+        assert_eq!(s.account_id(), "acc");
+    }
+
+    #[test]
+    fn resources_deserialize_from_action_json() {
+        let r: Resource = serde_json::from_str(
+            r#"{"D1Table":{"database_id":"d","database_name":"main","table":"users"}}"#,
+        )
+        .unwrap();
+        assert_eq!(r.label(), "main.users");
+        let r: Resource = serde_json::from_str(r#"{"Worker":{"name":"api"}}"#).unwrap();
+        assert_eq!(r, Resource::Worker { name: "api".into() });
+    }
+
+    #[test]
+    fn flatten_turns_every_failure_into_a_message() {
+        assert!(matches!(flatten(Ok(Ok(3))), Loadable::Loaded { value: 3 }));
+        match flatten::<u8>(Ok(Err(ApiError::RateLimited))) {
+            Loadable::Failed(e) => assert_eq!(e, "rate limited by Cloudflare; try again shortly"),
+            other => panic!("{other:?}"),
+        }
+        match flatten::<u8>(Err(anyhow::anyhow!("network task failed: cancelled"))) {
+            Loadable::Failed(e) => assert!(e.contains("cancelled")),
+            other => panic!("{other:?}"),
+        }
+    }
+}

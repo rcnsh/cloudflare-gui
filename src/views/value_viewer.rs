@@ -242,4 +242,35 @@ mod tests {
         let big = vec![0u8; HEX_PREVIEW_BYTES + 10];
         assert!(hex_dump(&big).ends_with("… 10 more bytes\n"));
     }
+
+    #[test]
+    fn json_with_leading_whitespace_and_arrays_is_pretty_printed() {
+        let (kind, text) = classify(b"  \n[1,2]");
+        assert_eq!(kind, Kind::Json);
+        assert_eq!(text.unwrap(), "[\n  1,\n  2\n]");
+        // Valid JSON, but a scalar: shown as typed.
+        assert_eq!(classify(b"\"just a string\"").0, Kind::Text);
+    }
+
+    #[test]
+    fn tabs_and_newlines_are_text_but_other_controls_are_binary() {
+        assert_eq!(classify(b"a\tb\r\nc").0, Kind::Text);
+        assert_eq!(classify(b"\x1b[31mred").0, Kind::Binary);
+        assert_eq!(classify(b"\x7f").0, Kind::Binary);
+        assert_eq!(classify("ünïcødé ☃".as_bytes()).0, Kind::Text);
+    }
+
+    #[test]
+    fn hex_dump_rows_have_offsets_and_dots_for_non_ascii() {
+        let bytes: Vec<u8> = (0u8..20).chain([b' ', 0xe9]).collect();
+        let dump = hex_dump(&bytes);
+        let lines: Vec<_> = dump.lines().collect();
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].starts_with("00000000  00 01 02"));
+        assert!(lines[1].starts_with("00000010  10 11 12 13 20 e9"));
+        assert!(lines[1].ends_with("  .... ."));
+        assert_eq!(hex_dump(&[]), "");
+        let exact = vec![b'a'; HEX_PREVIEW_BYTES];
+        assert!(!hex_dump(&exact).contains("more bytes"));
+    }
 }
