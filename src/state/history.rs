@@ -122,4 +122,36 @@ mod tests {
             format!("SELECT {}", MAX_PER_DATABASE + 9)
         );
     }
+
+    #[test]
+    fn corrupt_files_start_empty_and_are_replaced_on_the_next_save() {
+        let dir =
+            std::env::temp_dir().join(format!("cfgui-history-corrupt-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("history.json");
+        std::fs::write(&path, "{ not json").unwrap();
+        let mut history = QueryHistory::load_from(path.clone());
+        assert!(history.entries("db").is_empty());
+        history.record("db", entry("  SELECT 1", 1));
+        history.record("db", entry("SELECT 1\n", 2));
+        assert_eq!(
+            history.entries("db").len(),
+            1,
+            "surrounding whitespace is ignored"
+        );
+        assert_eq!(QueryHistory::load_from(path.clone()).entries("db")[0].at, 2);
+        assert!(
+            !path.with_extension("json.tmp").exists(),
+            "the temp file is renamed away"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn entries_without_a_path_are_kept_in_memory_only() {
+        let mut history = QueryHistory::default();
+        history.record("db", entry("SELECT 1", 1));
+        assert_eq!(history.entries("db").len(), 1);
+        assert!(history.entries("other").is_empty());
+    }
 }

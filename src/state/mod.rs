@@ -47,3 +47,19 @@ pub fn data_dir() -> std::path::PathBuf {
         .unwrap_or_else(std::env::temp_dir)
         .join("cloudflare-gui")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_unloaded_or_failed_lists_need_a_fetch() {
+        assert!(Loadable::<u8>::NotLoaded.needs_load());
+        assert!(Loadable::<u8>::Failed("boom".into()).needs_load());
+        assert!(!Loadable::<u8>::Loading.needs_load());
+        assert!(!Loadable::loaded(1u8).needs_load());
+        assert_eq!(Loadable::loaded(1u8).value(), Some(&1));
+        assert_eq!(Loadable::<u8>::Loading.value(), None);
+        assert!(matches!(Loadable::<u8>::default(), Loadable::NotLoaded));
+    }
+}
