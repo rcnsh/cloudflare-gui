@@ -489,6 +489,82 @@ mod tests {
     }
 
     #[test]
+    fn block_comments_do_not_nest() {
+        // SQLite ends a block comment at the first `*/`, so the DELETE runs.
+        assert_write("/* outer /* inner */ DELETE FROM t");
+        assert_read("/**/SELECT 1");
+        assert_read("SELECT 1 /* */; /* ; */ SELECT 2");
+        // `/*/` opens a comment that never closes, so nothing is left to run.
+        assert!(classify("/*/ SELECT 1").is_empty());
+    }
+
+    #[test]
+    fn semicolons_inside_quoted_identifiers_do_not_split() {
+        for sql in [
+            "SELECT [a;DELETE FROM t] FROM x",
+            "SELECT \"a;DELETE FROM t\" FROM x",
+            "SELECT `a;DELETE FROM t` FROM x",
+            "SELECT 'a'';DELETE FROM t' FROM x",
+        ] {
+            let c = classify(sql);
+            assert_eq!(c.statements.len(), 1, "{sql}");
+            assert!(c.is_read_only(), "{sql}");
+        }
+    }
+
+    #[test]
+    fn functions_named_like_writes_are_fine_in_a_select() {
+        assert_read("SELECT replace(name, 'a', 'b') FROM t");
+        assert_read("SELECT * FROM t WHERE a IN (VALUES (1), (2))");
+        assert_read("SELECT * FROM pragma_table_info('users')");
+        assert_read("SELECT x'DEADBEEF', 1.5e10, -3, ?1, :name, $v");
+    }
+
+    #[test]
+    fn ctes_followed_by_another_statement_are_split() {
+        assert_write("WITH x AS (SELECT 1) SELECT * FROM x; DELETE FROM t");
+        assert_read("WITH x(a) AS (VALUES (1)) SELECT a FROM x");
+        assert_write("WITH x AS (SELECT 1)) DELETE FROM t");
+    }
+
+    #[test]
+    fn keywords_are_case_insensitive() {
+        assert_write("dElEtE FROM t");
+        assert_write("pragma FOREIGN_KEYS = on");
+        assert_read("Explain Query Plan Update t Set a = 1");
+    }
+
+    #[test]
+    fn pragmas_with_a_quoted_schema_are_writes() {
+        assert_write("PRAGMA \"main\".user_version");
+        assert_write("PRAGMA table_info users");
+        assert_read("PRAGMA main.integrity_check");
+        assert_write("PRAGMA main.optimize");
+        assert_write("PRAGMA shrink_memory");
+    }
+
+    #[test]
+    fn statement_text_is_what_the_dialog_shows() {
+        let c = classify("  SELECT 1 ;\n\n  DELETE FROM t  ");
+        let texts: Vec<_> = c.statements.iter().map(|s| s.text.as_str()).collect();
+        assert_eq!(texts, ["SELECT 1", "DELETE FROM t"]);
+        assert_eq!(c.statements[0].reason, None);
+        assert_eq!(StatementKind::Write.to_string(), "write");
+        assert_eq!(StatementKind::Read.to_string(), "read");
+    }
+
+    #[test]
+    fn unterminated_input_only_taints_its_own_statement() {
+        let c = classify("SELECT 1; SELECT 'oops");
+        assert_eq!(c.statements.len(), 2);
+        assert_eq!(c.statements[0].kind, StatementKind::Read);
+        assert_eq!(
+            c.statements[1].reason.as_deref(),
+            Some("unterminated quote or comment")
+        );
+    }
+
+    #[test]
     fn unicode_identifiers_do_not_break_tokenizing() {
         assert_read("SELECT ünïcødé FROM tablé WHERE naïve = '☃'");
         assert_write("DELETE FROM tablé");
