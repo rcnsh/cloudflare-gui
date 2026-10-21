@@ -6,4 +6,4 @@ cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 # The devtools build (scripting, demo mode) isn't shipped, but it shouldn't rot.
 cargo clippy --all-targets --features devtools -- -D warnings
-cargo test
+script/test

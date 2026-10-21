@@ -8,6 +8,7 @@ Native macOS console for Cloudflare D1, KV, R2 and live Worker logs. Rust + GPUI
 cargo run              # debug (GPUI and text crates are built with opt-level 3 anyway)
 cargo run --release
 ./script/check         # cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
+./script/test          # just the tests; args go to cargo test (`script/test -- --ignored` runs known-bug tests)
 RUST_LOG=cloudflare_gui=debug cargo run   # verbose logging (never logs the token)
 ```
 

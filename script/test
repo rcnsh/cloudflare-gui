@@ -1,0 +1,6 @@
+#!/bin/sh
+# Runs the test suite. Extra arguments go to `cargo test`, e.g. `script/test sql::`
+# or `script/test -- --ignored` for the tests that document known bugs.
+set -eu
+cd "$(dirname "$0")/.."
+exec cargo test "$@"
