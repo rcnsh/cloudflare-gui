@@ -510,3 +510,31 @@ impl Render for KvBrowser {
             )
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn now() -> i64 {
+        chrono::Utc::now().timestamp()
+    }
+
+    #[test]
+    fn expiry_is_relative_to_now() {
+        assert_eq!(relative_expiry(now() - 10), "expired");
+        assert_eq!(relative_expiry(now() + 10 * 60 + 30), "in 10m");
+        assert_eq!(relative_expiry(now() + 5 * 3600 + 30), "in 5h");
+        assert_eq!(relative_expiry(now() + 3 * 86_400 + 30), "in 3d");
+    }
+
+    #[test]
+    fn absolute_expiry_adds_the_utc_time() {
+        assert_eq!(absolute_expiry(0), "expired (1970-01-01 00:00 UTC)");
+        let soon = absolute_expiry(now() + 2 * 3600 + 30);
+        assert!(soon.starts_with("in 2h ("), "{soon}");
+        assert!(soon.ends_with(" UTC)"), "{soon}");
+        // Out of chrono's range: falls back to the raw number.
+        let far = i64::MAX / 2;
+        assert!(absolute_expiry(far).ends_with(&format!("({far})")));
+    }
+}

@@ -787,4 +787,95 @@ mod tests {
         assert_eq!(Level::parse("warn"), Level::Warn);
         assert_eq!(Level::parse("error"), Level::Error);
     }
+
+    fn parse(json: &str) -> TailEvent {
+        parse_tail_event(json.as_bytes()).unwrap()
+    }
+
+    #[test]
+    fn failed_outcomes_are_named_in_the_header() {
+        let lines = lines_for(
+            1,
+            &parse(r#"{"outcome":"exceededCpu","eventTimestamp":5,"event":{"cron":"* * * * *"}}"#),
+        );
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].text.as_ref(), "cron * * * * * · exceededCpu");
+        assert_eq!(lines[0].level, Level::Error);
+        assert_eq!(lines[0].timestamp, 5);
+    }
+
+    #[test]
+    fn exceptions_make_an_ok_invocation_an_error() {
+        let lines = lines_for(
+            2,
+            &parse(
+                r#"{"outcome":"ok","eventTimestamp":1,"event":{"rpcMethod":"run"},
+                    "exceptions":[{"name":"Error","message":{"code":1},"timestamp":9}]}"#,
+            ),
+        );
+        assert_eq!(lines[0].text.as_ref(), "rpc run", "no suffix for ok");
+        assert_eq!(lines[0].level, Level::Error);
+        assert_eq!(lines[1].kind, LineKind::Exception);
+        assert_eq!(lines[1].text.as_ref(), r#"Error: {"code":1}"#);
+        assert_eq!(lines[1].timestamp, 9);
+    }
+
+    #[test]
+    fn log_lines_keep_their_level_and_timestamp() {
+        let lines = lines_for(
+            3,
+            &parse(
+                r#"{"outcome":"ok","event":null,"logs":[
+                    {"message":["a",1],"level":"trace","timestamp":10},
+                    {"message":[],"level":"something-new","timestamp":11}]}"#,
+            ),
+        );
+        let summary: Vec<_> = lines[1..]
+            .iter()
+            .map(|l| (l.level, l.timestamp, l.text.to_string()))
+            .collect();
+        assert_eq!(
+            summary,
+            [
+                (Level::Debug, 10, "a 1".into()),
+                (Level::Info, 11, String::new())
+            ]
+        );
+    }
+
+    #[test]
+    fn text_filters_match_the_lowercased_line() {
+        let line = Line::new(
+            0,
+            0,
+            Level::Error,
+            LineKind::Exception,
+            "TypeError: Boom".into(),
+        );
+        let filter = |min_level, text: &str| Filter {
+            min_level,
+            text: text.into(),
+        };
+        assert!(filter(Some(Level::Debug), "typeerror").matches(&line));
+        assert!(filter(Some(Level::Error), "boom").matches(&line));
+        assert!(!filter(Some(Level::Error), "bang").matches(&line));
+    }
+
+    #[test]
+    fn levels_order_from_debug_to_error() {
+        assert!(
+            Level::Debug < Level::Info && Level::Info < Level::Warn && Level::Warn < Level::Error
+        );
+        for level in [Level::Debug, Level::Info, Level::Warn, Level::Error] {
+            assert_eq!(Level::parse(level.label()), level);
+        }
+    }
+
+    #[test]
+    fn clock_shows_milliseconds() {
+        let shown = clock(1_700_000_000_123);
+        assert_eq!(shown.len(), "12:34:56.123".len(), "{shown}");
+        assert!(shown.ends_with(".123"), "{shown}");
+        assert_eq!(clock(i64::MAX), "");
+    }
 }

@@ -522,3 +522,19 @@ impl Render for SqlEditor {
             )
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ages_round_down_to_the_largest_unit() {
+        assert_eq!(ago(-5), "just now", "clock skew isn't shown as negative");
+        assert_eq!(ago(59), "just now");
+        assert_eq!(ago(60), "1m ago");
+        assert_eq!(ago(3599), "59m ago");
+        assert_eq!(ago(3600), "1h ago");
+        assert_eq!(ago(86_399), "23h ago");
+        assert_eq!(ago(86_400 * 3), "3d ago");
+    }
+}

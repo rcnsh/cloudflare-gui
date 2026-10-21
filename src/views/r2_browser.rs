@@ -801,4 +801,60 @@ mod tests {
         assert!(previewable(&object(PREVIEW_LIMIT as u64 + 1, "image/png")).is_err());
         assert!(previewable(&object(PREVIEW_LIMIT as u64 * 10, "text/plain")).is_ok());
     }
+
+    #[test]
+    fn sizes_use_one_decimal_below_ten_units() {
+        assert_eq!(fmt_size(1024), "1.0 KB");
+        assert_eq!(fmt_size(10 * 1024), "10 KB");
+        assert_eq!(fmt_size(1024 * 1024), "1.0 MB");
+        assert_eq!(fmt_size(3 * 1024u64.pow(4)), "3.0 TB");
+        assert_eq!(
+            fmt_size(5000 * 1024u64.pow(4)),
+            "5000 TB",
+            "TB is the largest unit"
+        );
+    }
+
+    #[test]
+    #[ignore = "bug: rounding happens after the unit is picked, so 1 MB - 1 byte shows as \"1024 KB\""]
+    fn sizes_just_under_a_unit_do_not_show_1024() {
+        assert_eq!(fmt_size(1024 * 1024 - 1), "1.0 MB");
+    }
+
+    #[test]
+    fn parents_of_deeper_and_odd_folders() {
+        assert_eq!(parent("a/b/c/"), "a/b/");
+        assert_eq!(parent("a/b"), "a/");
+        assert_eq!(parent("a"), "");
+        assert_eq!(parent("/"), "");
+    }
+
+    #[test]
+    fn unparseable_times_are_shown_as_given() {
+        assert_eq!(fmt_time("yesterday"), "yesterday");
+        assert_eq!(fmt_time(""), "");
+        let shown = fmt_time("2024-05-01T12:30:00.000Z");
+        assert_eq!(shown.len(), "2024-05-01 12:30".len(), "{shown}");
+        assert!(shown.starts_with("2024-0"), "{shown}");
+    }
+
+    #[test]
+    fn images_at_the_limit_and_untyped_objects_are_previewed() {
+        let object = |size, content_type: Option<&str>| Object {
+            key: "k".into(),
+            size,
+            last_modified: None,
+            etag: None,
+            http_metadata: crate::cloudflare::r2::HttpMetadata {
+                content_type: content_type.map(Into::into),
+                ..Default::default()
+            },
+            custom_metadata: Default::default(),
+            storage_class: None,
+        };
+        assert!(previewable(&object(PREVIEW_LIMIT as u64, Some("image/jpeg"))).is_ok());
+        assert!(previewable(&object(PREVIEW_LIMIT as u64 * 4, None)).is_ok());
+        let err = previewable(&object(PREVIEW_LIMIT as u64 * 2, Some("image/gif"))).unwrap_err();
+        assert!(err.starts_with("Image is "), "{err}");
+    }
 }
