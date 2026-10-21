@@ -274,4 +274,156 @@ mod tests {
         assert_eq!(exact.bytes.len(), 10_000);
         assert!(!exact.truncated);
     }
+
+    fn bucket(name: &str, jurisdiction: Option<&str>) -> Bucket {
+        Bucket {
+            name: name.into(),
+            creation_date: None,
+            location: None,
+            jurisdiction: jurisdiction.map(Into::into),
+            storage_class: None,
+        }
+    }
+
+    fn envelope(result: serde_json::Value, info: serde_json::Value) -> Reply {
+        Reply::status(200).body(
+            serde_json::json!({ "success": true, "errors": [], "result": result, "result_info": info })
+                .to_string(),
+        )
+    }
+
+    #[tokio::test]
+    async fn bucket_lists_follow_the_cursor() {
+        let server = MockServer::start(vec![
+            envelope(
+                serde_json::json!({ "buckets": [{ "name": "a" }] }),
+                serde_json::json!({ "cursor": "page-2" }),
+            ),
+            envelope(
+                serde_json::json!({ "buckets": [{ "name": "b" }] }),
+                serde_json::json!({ "cursor": "" }),
+            ),
+        ])
+        .await;
+        let buckets = server.client().list_r2_buckets("acc").await.unwrap();
+        let names: Vec<_> = buckets.iter().map(|b| b.name.as_str()).collect();
+        assert_eq!(names, ["a", "b"]);
+        let seen = server.requests();
+        assert_eq!(
+            seen[0].target,
+            "/client/v4/accounts/acc/r2/buckets?per_page=1000"
+        );
+        assert_eq!(
+            seen[1].target,
+            "/client/v4/accounts/acc/r2/buckets?per_page=1000&cursor=page-2"
+        );
+    }
+
+    #[tokio::test]
+    async fn only_non_default_jurisdictions_send_the_header() {
+        let empty = || envelope(serde_json::json!([]), serde_json::json!({}));
+        let server = MockServer::start(vec![empty(), empty(), empty(), Reply::status(200)]).await;
+        let client = server.client();
+        for b in [
+            bucket("eu", Some("eu")),
+            bucket("default", Some("default")),
+            bucket("none", None),
+        ] {
+            client.list_r2_objects("acc", &b, "", None).await.unwrap();
+        }
+        client
+            .get_r2_object("acc", &bucket("eu", Some("eu")), "k", 10)
+            .await
+            .unwrap();
+        let headers: Vec<_> = server
+            .requests()
+            .iter()
+            .map(|r| r.header("cf-r2-jurisdiction").map(str::to_string))
+            .collect();
+        assert_eq!(
+            headers,
+            [Some("eu".to_string()), None, None, Some("eu".to_string())]
+        );
+    }
+
+    #[tokio::test]
+    async fn root_listings_send_no_prefix_and_ignore_cursors_when_not_truncated() {
+        let server = MockServer::start(vec![envelope(
+            serde_json::json!([{ "key": "top.txt" }]),
+            serde_json::json!({ "cursor": "stale", "is_truncated": false, "delimited": ["docs/"] }),
+        )])
+        .await;
+        let listing = server
+            .client()
+            .list_r2_objects("acc", &bucket("b", None), "", Some("c1"))
+            .await
+            .unwrap();
+        assert_eq!(listing.page.cursor, None);
+        assert_eq!(listing.prefixes, ["docs/"]);
+        assert_eq!(listing.page.items[0].size, 0, "size defaults to zero");
+        assert_eq!(
+            server.requests()[0].target,
+            "/client/v4/accounts/acc/r2/buckets/b/objects?per_page=1000&delimiter=%2F&cursor=c1"
+        );
+    }
+
+    #[tokio::test]
+    async fn object_reads_report_the_content_type() {
+        let server = MockServer::start(vec![
+            Reply::status(200)
+                .header("Content-Type", "text/csv")
+                .body("a,b\n1,2\n"),
+        ])
+        .await;
+        let body = server
+            .client()
+            .get_r2_object("acc", &bucket("b", None), "data.csv", 1024)
+            .await
+            .unwrap();
+        assert_eq!(body.content_type.as_deref(), Some("text/csv"));
+        assert_eq!(body.bytes, b"a,b\n1,2\n");
+    }
+
+    #[tokio::test]
+    async fn missing_objects_are_api_errors() {
+        let server = MockServer::start(vec![Reply::status(404)]).await;
+        let err = server
+            .client()
+            .get_r2_object("acc", &bucket("b", None), "gone", 1024)
+            .await
+            .unwrap_err();
+        assert_eq!(err.status(), Some(reqwest::StatusCode::NOT_FOUND));
+    }
+
+    #[tokio::test]
+    async fn a_zero_limit_reads_nothing_but_knows_there_was_more() {
+        let server = MockServer::start(vec![Reply::status(200).body("abc")]).await;
+        let body = server
+            .client()
+            .get_r2_object("acc", &bucket("b", None), "k", 0)
+            .await
+            .unwrap();
+        assert!(body.bytes.is_empty());
+        assert!(body.truncated);
+    }
+
+    #[test]
+    fn objects_decode_metadata() {
+        let object: Object = serde_json::from_value(serde_json::json!({
+            "key": "a.png",
+            "size": 12,
+            "http_metadata": { "contentType": "image/png", "cacheControl": "max-age=60" },
+            "custom_metadata": { "owner": "ops" }
+        }))
+        .unwrap();
+        assert_eq!(
+            object.http_metadata.content_type.as_deref(),
+            Some("image/png")
+        );
+        assert_eq!(
+            object.http_metadata.cache_control.as_deref(),
+            Some("max-age=60")
+        );
+        assert_eq!(object.custom_metadata["owner"], "ops");
+    }
 }

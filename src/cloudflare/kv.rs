@@ -130,6 +130,8 @@ impl Client {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
     use crate::cloudflare::testing::{MockServer, Reply};
 
     #[tokio::test]
@@ -212,5 +214,105 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(value.metadata, None);
+    }
+
+    #[tokio::test]
+    async fn namespaces_follow_pages_until_the_total() {
+        let page = |items: serde_json::Value| {
+            Reply::status(200).body(
+                json!({ "success": true, "result": items, "result_info": { "total_count": 3 } })
+                    .to_string(),
+            )
+        };
+        let server = MockServer::start(vec![
+            page(json!([{ "id": "1", "title": "zeta" }, { "id": "2", "title": "Alpha" }])),
+            page(json!([{ "id": "3", "title": "beta" }])),
+        ])
+        .await;
+        let namespaces = server.client().list_kv_namespaces("acc").await.unwrap();
+        let titles: Vec<_> = namespaces.iter().map(|n| n.title.as_str()).collect();
+        assert_eq!(titles, ["Alpha", "beta", "zeta"], "sorted ignoring case");
+        let targets: Vec<_> = server.requests().into_iter().map(|r| r.target).collect();
+        assert_eq!(
+            targets,
+            [
+                "/client/v4/accounts/acc/storage/kv/namespaces?page=1&per_page=100",
+                "/client/v4/accounts/acc/storage/kv/namespaces?page=2&per_page=100",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn empty_prefix_and_missing_cursor_are_not_sent() {
+        let server = MockServer::start(vec![
+            Reply::fixture(200, "kv_keys_page2.json"),
+            Reply::fixture(200, "kv_keys_page2.json"),
+        ])
+        .await;
+        let client = server.client();
+        client
+            .list_kv_keys("acc", "ns", Some(""), None)
+            .await
+            .unwrap();
+        client.list_kv_keys("acc", "ns", None, None).await.unwrap();
+        for req in server.requests() {
+            assert_eq!(
+                req.target,
+                "/client/v4/accounts/acc/storage/kv/namespaces/ns/keys?limit=1000"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn metadata_errors_from_the_client_side_mean_no_metadata() {
+        let server = MockServer::start(vec![
+            Reply::status(200).body("v1"),
+            Reply::status(404).body(
+                r#"{"success":false,"errors":[{"code":10009,"message":"key not found"}],"result":null}"#,
+            ),
+            Reply::status(200).body("v2"),
+            Reply::status(200).body("not json at all"),
+        ])
+        .await;
+        let client = server.client();
+        let first = client.get_kv_value("acc", "ns", "a", None).await.unwrap();
+        assert_eq!((first.bytes.as_slice(), first.metadata), (&b"v1"[..], None));
+        let second = client.get_kv_value("acc", "ns", "b", None).await.unwrap();
+        assert_eq!(
+            (second.bytes.as_slice(), second.metadata),
+            (&b"v2"[..], None)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_missing_value_is_an_error() {
+        let server = MockServer::start(vec![Reply::status(404)]).await;
+        let err = server
+            .client()
+            .get_kv_value("acc", "ns", "gone", None)
+            .await
+            .unwrap_err();
+        assert_eq!(err.status(), Some(reqwest::StatusCode::NOT_FOUND));
+        assert_eq!(
+            server.requests().len(),
+            1,
+            "no metadata fetch after a failure"
+        );
+    }
+
+    #[tokio::test]
+    async fn metadata_server_errors_are_reported() {
+        let mut replies = vec![Reply::status(200).body("v")];
+        replies.extend((0..4).map(|_| Reply::status(500)));
+        let server = MockServer::start(replies).await;
+        let err = server
+            .client()
+            .get_kv_value("acc", "ns", "k", None)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err.status(),
+            Some(reqwest::StatusCode::INTERNAL_SERVER_ERROR)
+        );
     }
 }

@@ -405,4 +405,161 @@ mod tests {
         assert_eq!(asked_for.unwrap(), "trace-v1");
         assert_eq!(hello.into_text().unwrap().as_str(), r#"{"debug":false}"#);
     }
+
+    fn trigger_of(event: Value) -> String {
+        let payload = json!({ "outcome": "ok", "event": event }).to_string();
+        parse_tail_event(payload.as_bytes()).unwrap().trigger()
+    }
+
+    #[test]
+    fn every_trigger_kind_has_a_description() {
+        assert_eq!(
+            trigger_of(json!({ "request": { "method": "POST", "url": "https://x.test/" } })),
+            "POST https://x.test/",
+            "no status while the response is pending"
+        );
+        assert_eq!(trigger_of(json!({ "request": {} })), "? ?");
+        assert_eq!(
+            trigger_of(json!({ "queue": "jobs" })),
+            "queue jobs (0 messages)"
+        );
+        assert_eq!(
+            trigger_of(json!({ "mailFrom": "a@example.com", "rcptTo": "b@example.com" })),
+            "email from a@example.com"
+        );
+        assert_eq!(trigger_of(json!({ "rpcMethod": "getUser" })), "rpc getUser");
+        assert_eq!(trigger_of(json!({ "message": "hello" })), "hello");
+        assert_eq!(trigger_of(json!({ "scheduledTime": 1 })), "alarm");
+        assert_eq!(trigger_of(json!({ "consumedEvents": [] })), "tail events");
+        assert_eq!(trigger_of(json!({ "somethingNew": true })), "event");
+    }
+
+    #[test]
+    fn log_messages_join_like_console_log() {
+        assert_eq!(format_log_message(&[]), "");
+        assert_eq!(
+            format_log_message(&[json!("count"), json!(3), json!(null), json!([1, "a"])]),
+            r#"count 3 null [1,"a"]"#
+        );
+    }
+
+    #[test]
+    fn tail_events_keep_the_raw_message_and_default_missing_fields() {
+        let payload = br#"{"outcome":"canceled","extra":{"kept":true}}"#;
+        let event = parse_tail_event(payload).unwrap();
+        assert_eq!(event.outcome, "canceled");
+        assert!(event.logs.is_empty() && event.exceptions.is_empty());
+        assert_eq!(event.raw["extra"]["kept"], json!(true));
+        assert!(parse_tail_event(b"not json").is_err());
+        assert!(parse_tail_event(br#"{"logs":"wrong type"}"#).is_err());
+    }
+
+    #[tokio::test]
+    async fn tail_creation_is_never_retried_but_deletion_is() {
+        // A retried create could leave a second tail running on the account.
+        let server = MockServer::start(vec![
+            Reply::status(503),
+            Reply::status(503),
+            Reply::status(200).body(r#"{"success":true,"errors":[],"result":null}"#),
+        ])
+        .await;
+        let client = server.client();
+        let err = client.create_tail("acc", "api").await.unwrap_err();
+        assert_eq!(err.status(), Some(reqwest::StatusCode::SERVICE_UNAVAILABLE));
+        assert_eq!(server.requests().len(), 1);
+        client.delete_tail("acc", "api", "t1").await.unwrap();
+        let seen = server.requests();
+        assert_eq!(seen.len(), 3);
+        assert!(seen[1..].iter().all(|r| r.method == "DELETE"));
+    }
+
+    #[tokio::test]
+    async fn script_names_are_encoded_as_one_segment() {
+        let server = MockServer::start(vec![Reply::fixture(200, "tail_create.json")]).await;
+        server
+            .client()
+            .create_tail("acc", "my worker/v2")
+            .await
+            .unwrap();
+        assert_eq!(
+            server.requests()[0].target,
+            "/client/v4/accounts/acc/workers/scripts/my%20worker%2Fv2/tails"
+        );
+    }
+
+    /// Bad frames are skipped, and binary frames are events too.
+    #[allow(clippy::result_large_err)]
+    #[tokio::test]
+    async fn unparseable_messages_are_skipped() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_hdr_async(
+                stream,
+                |_: &tokio_tungstenite::tungstenite::handshake::server::Request,
+                 mut response: tokio_tungstenite::tungstenite::handshake::server::Response| {
+                    response.headers_mut().insert(
+                        "Sec-WebSocket-Protocol",
+                        HeaderValue::from_static("trace-v1"),
+                    );
+                    Ok(response)
+                },
+            )
+            .await
+            .unwrap();
+            let _hello = socket.next().await;
+            socket.send(Message::text("{not json")).await.unwrap();
+            socket
+                .send(Message::binary(
+                    fixture("tail_event_scheduled.json").into_bytes(),
+                ))
+                .await
+                .unwrap();
+            // Keep the socket open until the client has read everything.
+            let _ = socket.next().await;
+        });
+
+        let (tx, mut rx) = futures::channel::mpsc::unbounded();
+        let stream = tokio::spawn(stream_tail(url, tx));
+        assert!(matches!(rx.next().await, Some(TailUpdate::Connected)));
+        match rx.next().await {
+            Some(TailUpdate::Event(event)) => assert_eq!(event.trigger(), "cron */5 * * * *"),
+            other => panic!("expected the scheduled event, got {other:?}"),
+        }
+        stream.abort();
+    }
+
+    #[tokio::test]
+    async fn failed_connections_report_a_reconnect() {
+        let addr = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap()
+            .local_addr()
+            .unwrap();
+        let (tx, mut rx) = futures::channel::mpsc::unbounded();
+        let stream = tokio::spawn(stream_tail(format!("ws://{addr}"), tx));
+        match rx.next().await {
+            Some(TailUpdate::Reconnecting { attempt: 1, reason }) => assert!(!reason.is_empty()),
+            other => panic!("expected a reconnect, got {other:?}"),
+        }
+        stream.abort();
+    }
+
+    #[tokio::test]
+    async fn streaming_stops_once_nobody_is_listening() {
+        let addr = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap()
+            .local_addr()
+            .unwrap();
+        let (tx, rx) = futures::channel::mpsc::unbounded();
+        drop(rx);
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            stream_tail(format!("ws://{addr}"), tx),
+        )
+        .await
+        .expect("stream_tail returns instead of sleeping to reconnect");
+    }
 }

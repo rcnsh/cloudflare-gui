@@ -111,4 +111,69 @@ mod tests {
             .unwrap_err();
         assert!(err.to_string().contains("can't see any accounts"));
     }
+
+    #[tokio::test]
+    async fn inactive_tokens_are_rejected_before_listing_accounts() {
+        let server =
+            MockServer::start(vec![Reply::status(200).body(
+                r#"{"success":true,"errors":[],"result":{"id":"tok","status":"disabled"}}"#,
+            )])
+            .await;
+        let err = server
+            .client()
+            .verify_and_list_accounts()
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "unexpected response from Cloudflare: token is disabled"
+        );
+        assert_eq!(server.requests().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn non_auth_verify_failures_are_returned() {
+        let server = MockServer::start(vec![Reply::status(400).body(
+            r#"{"success":false,"errors":[{"code":6003,"message":"Invalid request headers"}]}"#,
+        )])
+        .await;
+        let err = server
+            .client()
+            .verify_and_list_accounts()
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "Invalid request headers (code 6003) [HTTP 400]"
+        );
+        assert_eq!(server.requests().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn active_tokens_list_accounts_across_pages() {
+        let page = |id: &str| {
+            Reply::status(200).body(format!(
+                r#"{{"success":true,"errors":[],"result":[{{"id":"{id}","name":"Account {id}","type":"standard"}}],"result_info":{{"total_count":2}}}}"#
+            ))
+        };
+        let server = MockServer::start(vec![
+            Reply::fixture(200, "token_verify.json"),
+            page("a"),
+            page("b"),
+        ])
+        .await;
+        let accounts = server.client().verify_and_list_accounts().await.unwrap();
+        let ids: Vec<_> = accounts.iter().map(|a| a.id.as_str()).collect();
+        assert_eq!(ids, ["a", "b"]);
+        assert_eq!(accounts[0].kind.as_deref(), Some("standard"));
+        let targets: Vec<_> = server.requests().into_iter().map(|r| r.target).collect();
+        assert_eq!(
+            targets,
+            [
+                "/client/v4/user/tokens/verify",
+                "/client/v4/accounts?page=1&per_page=50",
+                "/client/v4/accounts?page=2&per_page=50",
+            ]
+        );
+    }
 }

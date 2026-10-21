@@ -53,12 +53,21 @@ pub struct SeenRequest {
     /// Path and query exactly as sent, still percent-encoded.
     pub target: String,
     pub authorization: Option<String>,
+    /// Every header, names lowercased.
+    pub headers: Vec<(String, String)>,
     pub body: String,
 }
 
 impl SeenRequest {
     pub fn json(&self) -> serde_json::Value {
         serde_json::from_str(&self.body).expect("request body is JSON")
+    }
+
+    pub fn header(&self, name: &str) -> Option<&str> {
+        self.headers
+            .iter()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v.as_str())
     }
 }
 
@@ -135,13 +144,16 @@ async fn read_request(socket: &mut tokio::net::TcpStream) -> SeenRequest {
     let target = request_line.next().unwrap_or_default().to_string();
     let mut content_length = 0;
     let mut authorization = None;
+    let mut headers = Vec::new();
     for line in lines {
         if let Some((k, v)) = line.split_once(':') {
-            match k.trim().to_ascii_lowercase().as_str() {
-                "content-length" => content_length = v.trim().parse().unwrap_or(0),
-                "authorization" => authorization = Some(v.trim().to_string()),
+            let (k, v) = (k.trim().to_ascii_lowercase(), v.trim().to_string());
+            match k.as_str() {
+                "content-length" => content_length = v.parse().unwrap_or(0),
+                "authorization" => authorization = Some(v.clone()),
                 _ => {}
             }
+            headers.push((k, v));
         }
     }
     let mut body = buf[header_end..].to_vec();
@@ -156,6 +168,7 @@ async fn read_request(socket: &mut tokio::net::TcpStream) -> SeenRequest {
         method,
         target,
         authorization,
+        headers,
         body: String::from_utf8_lossy(&body).to_string(),
     }
 }

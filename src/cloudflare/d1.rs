@@ -279,4 +279,165 @@ mod tests {
         assert_eq!(display_value(&serde_json::json!(1.5)), "1.5");
         assert_eq!(display_value(&serde_json::json!("x")), "x");
     }
+
+    #[test]
+    fn identifiers_are_always_quoted() {
+        assert_eq!(quote_ident("users"), "\"users\"");
+        assert_eq!(quote_ident("user stats"), "\"user stats\"");
+        assert_eq!(
+            quote_ident("x\"; DROP TABLE t; --"),
+            "\"x\"\"; DROP TABLE t; --\""
+        );
+        let sql = format!("SELECT * FROM {}", quote_ident("a\"; DELETE FROM t; --"));
+        assert!(sql::classify(&sql).is_read_only(), "{sql}");
+    }
+
+    #[test]
+    fn display_covers_every_json_shape() {
+        assert_eq!(display_value(&Value::Null), "NULL");
+        assert_eq!(display_value(&json!(true)), "true");
+        assert_eq!(display_value(&json!(-3)), "-3");
+        assert_eq!(display_value(&json!([])), "<blob 0 bytes>");
+        // Only arrays of byte values are blobs.
+        assert_eq!(display_value(&json!(["a", 1])), r#"["a",1]"#);
+        assert_eq!(display_value(&json!([1, -1])), "[1,-1]");
+        assert_eq!(display_value(&json!({ "k": 1 })), r#"{"k":1}"#);
+    }
+
+    #[test]
+    fn statement_results_tolerate_missing_fields() {
+        let result: StatementResult = serde_json::from_str("{}").unwrap();
+        assert!(result.success, "success defaults to true");
+        assert!(result.results.columns.is_empty());
+        assert_eq!(result.meta, QueryMeta::default());
+        let result: StatementResult =
+            serde_json::from_str(r#"{"success":false,"meta":{"changes":2,"changed_db":true}}"#)
+                .unwrap();
+        assert!(!result.success);
+        assert_eq!(result.meta.changes, Some(2.0));
+        assert_eq!(result.meta.changed_db, Some(true));
+    }
+
+    #[tokio::test]
+    async fn database_lists_follow_page_numbers() {
+        let page = |names: &[&str], total: usize| {
+            let items: Vec<_> = names
+                .iter()
+                .map(|n| json!({ "uuid": format!("id-{n}"), "name": n }))
+                .collect();
+            Reply::status(200).body(
+                json!({ "success": true, "errors": [], "result": items,
+                        "result_info": { "page": 1, "total_count": total } })
+                .to_string(),
+            )
+        };
+        let server = MockServer::start(vec![page(&["a", "b"], 3), page(&["c"], 3)]).await;
+        let dbs = server.client().list_d1_databases("acc").await.unwrap();
+        let names: Vec<_> = dbs.iter().map(|d| d.name.as_str()).collect();
+        assert_eq!(names, ["a", "b", "c"]);
+        let seen = server.requests();
+        assert_eq!(seen.len(), 2);
+        assert_eq!(
+            seen[1].target,
+            "/client/v4/accounts/acc/d1/database?page=2&per_page=1000"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_empty_page_ends_the_listing_even_if_the_total_says_more() {
+        let body = |items: Value| {
+            Reply::status(200).body(
+                json!({ "success": true, "result": items, "result_info": { "total_count": 50 } })
+                    .to_string(),
+            )
+        };
+        let server = MockServer::start(vec![
+            body(json!([{ "uuid": "1", "name": "a" }])),
+            body(json!([])),
+        ])
+        .await;
+        let dbs = server.client().list_d1_databases("acc").await.unwrap();
+        assert_eq!(dbs.len(), 1);
+        assert_eq!(server.requests().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn empty_sql_is_rejected_without_a_request() {
+        let server = MockServer::start(vec![]).await;
+        for sql in ["", "  ;; ", "-- only a comment"] {
+            let err = server
+                .client()
+                .d1_query("acc", "db", sql, QueryIntent::Write)
+                .await
+                .unwrap_err();
+            assert!(err.to_string().contains("nothing to run"), "{sql:?}: {err}");
+        }
+        assert!(server.requests().is_empty());
+    }
+
+    #[tokio::test]
+    async fn write_mode_reads_still_retry_but_writes_do_not() {
+        // The retry policy follows what the SQL does, not which mode the tab is in.
+        let server = MockServer::start(vec![
+            Reply::status(503),
+            Reply::fixture(200, "d1_raw_select.json"),
+            Reply::status(503),
+        ])
+        .await;
+        let client = server.client();
+        client
+            .d1_query("acc", "db", "SELECT 1", QueryIntent::Write)
+            .await
+            .unwrap();
+        assert_eq!(server.requests().len(), 2);
+        let err = client
+            .d1_query(
+                "acc",
+                "db",
+                "SELECT 1; UPDATE t SET a = 1",
+                QueryIntent::Write,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(err.status(), Some(reqwest::StatusCode::SERVICE_UNAVAILABLE));
+        assert_eq!(server.requests().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn table_lists_skip_malformed_rows() {
+        let server = MockServer::start(vec![
+            Reply::status(200).body(
+                json!({ "success": true, "result": [{ "results": {
+                    "columns": ["name", "type"],
+                    "rows": [["ok", "table"], [null, "table"], ["short"], ["v", "view"]]
+                }}]})
+                .to_string(),
+            ),
+        ])
+        .await;
+        let tables = server.client().d1_tables("acc", "db").await.unwrap();
+        let names: Vec<_> = tables.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, ["ok", "v"]);
+        let sent = server.requests()[0].json()["sql"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(sql::classify(&sent).is_read_only(), "{sent}");
+    }
+
+    #[tokio::test]
+    async fn no_statement_results_means_no_tables() {
+        let server = MockServer::start(vec![
+            Reply::status(200).body(r#"{"success":true,"errors":[],"result":[]}"#),
+        ])
+        .await;
+        assert!(
+            server
+                .client()
+                .d1_tables("acc", "db")
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
 }
